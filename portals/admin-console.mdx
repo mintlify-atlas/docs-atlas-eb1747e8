@@ -61,13 +61,13 @@ The Admin Console is the backbone of Zippi's internal management layer. Eight di
 
 ## City Operations Workflow
 
-City operations is the logistical glue between a business that prepares an order and the customer who receives it. The workflow below reflects the `city_ops` module and the console dispatch panel.
+City operations is the logistical glue between a business that prepares an order and the customer who receives it. The workflow below reflects the dispatch and zones modules available to city-scoped console roles.
 
 ### Dispatch and Courier Assignment
 
 When an order reaches the `Empacado` (packed) state, it enters the dispatch queue. Roles with the `dispatch.manage` permission — `operations_admin`, `city_admin`, and `country_admin` — assign a courier from the available fleet.
 
-```
+```text
 Order: Empacado → Esperando domiciliario
 Dispatch assigns courier →
 Order: Domiciliario asignado → Recogido → En camino → Llegó → Entregado
@@ -75,24 +75,12 @@ Order: Domiciliario asignado → Recogido → En camino → Llegó → Entregado
 
 Courier assignment considers availability, current zone, active load, and distance. Every assignment is audited with the acting user, timestamp, and courier ID.
 
-City operations branch-request endpoints:
-
-```http
-GET  /api/v1/city-ops/branch-requests
-POST /api/v1/city-ops/branch-requests/{branch_id}/approve
-POST /api/v1/city-ops/branch-requests/{branch_id}/reject
-GET  /api/v1/city-ops/business-requests
-POST /api/v1/city-ops/business-requests/{business_id}/approve
-POST /api/v1/city-ops/business-requests/{business_id}/reject
-GET  /api/v1/city-ops/alerts
-```
-
 ### Zones and Pricing
 
 Zones define geographic coverage areas used for both courier assignment and delivery fee calculation. Pricing tables tie tariff rates to zones and distances.
 
-- Zone management requires the `zones.manage` permission (available to `country_admin` and `city_admin`).
-- Pricing requires the `pricing` permission group.
+- Zone management requires `zones.read` and `zones.manage` permissions (available to `country_admin` and `city_admin`).
+- The `pricing` module (`/pricing`) is accessible to roles that include it in their `modules` list.
 - Pricing changes are **versioned** — they never retroactively recalculate completed orders.
 
 ### Fleet Management
@@ -127,7 +115,7 @@ The cashier module exposes shift-level financial records:
 ```http
 GET  /api/v1/cashier/overview                          # Cashier overview (cashier.read)
 GET  /api/v1/cashier/shifts                            # List shifts
-POST /api/v1/cashier/shifts                            # Open a shift (cashier.reconcile)
+POST /api/v1/cashier/shifts                            # Open a shift (cashier.open)
 GET  /api/v1/cashier/shifts/{shift_id}                 # Get shift detail
 POST /api/v1/cashier/shifts/{shift_id}/base            # Register initial base amount
 GET  /api/v1/cashier/shifts/{shift_id}/movements       # List movements

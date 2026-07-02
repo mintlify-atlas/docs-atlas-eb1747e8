@@ -1,7 +1,7 @@
 ---
 title: "Cashier API: Shift Management and Payment Reconciliation"
 sidebarTitle: "Cashier"
-description: "Endpoints for opening and closing cashier shifts, recording payments, and reconciling cash. Requires cashier.open, cashier.close, or cashier.reconcile permissions."
+description: "Endpoints for opening and closing cashier shifts, recording cash movements, and reconciling totals. Requires cashier.read or cashier.reconcile permissions."
 ---
 
 The Cashier API manages the full lifecycle of a cashier shift — from opening with an initial float through intra-shift cash movements, summary inspection, and final arqueo (close-out reconciliation). All monetary values are expressed as **integer centavos** (Colombian pesos × 100). Every endpoint is scoped to the authenticated user's branch and enforces fine-grained RBAC permissions defined in `rbac.py`.
@@ -12,10 +12,8 @@ The Cashier API manages the full lifecycle of a cashier shift — from opening w
 |---|---|
 | `cashier.read` | Consult the cashier overview, shift list, movements, summaries, and liquidations |
 | `cashier.reconcile` | Open shifts, register the initial base, record movements, and close shifts |
-| `cashier.open` | Granted to the `cashier` operative role — allows opening a new shift |
-| `cashier.close` | Granted to the `cashier` operative role — allows closing (arqueo) a shift |
 
-The `cashier` built-in role automatically receives `cashier.read`, `cashier.reconcile`, `cashier.open`, and `cashier.close`.
+The `cashier` built-in role automatically receives both `cashier.read` and `cashier.reconcile`.
 
 ---
 

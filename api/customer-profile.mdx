@@ -4,7 +4,7 @@ sidebarTitle: "Customer Profile"
 description: "Manage the registered customer's profile, saved delivery addresses, and favorites. All endpoints require customer JWT authentication."
 ---
 
-The Customer Profile API provides registered customers with full control over their account data: personal details, saved delivery addresses, and favorited businesses. Every endpoint in this group is protected by the `require_customer` guard, which validates the customer JWT and enforces that customers can only read and modify their own data — a customer JWT with `scope=self` cannot access any other customer's resources.
+The Customer Profile API provides registered customers with full control over their account data: personal details, saved delivery addresses, and favorited businesses. Every endpoint in this group is protected by the `require_customer` guard, which validates the customer JWT and enforces that each customer can only read and modify their own data.
 
 <Note>
   All endpoints below require a valid customer JWT issued at login. Include it as
@@ -94,9 +94,8 @@ curl https://api.zippi.app/api/v1/customer/profile \
   Email address, or `null` if not set.
 </ResponseField>
 
-<ResponseField name="data.avatar" type="string">
-  Two-letter monogram derived from the customer's name (e.g. `LG` for
-  *Laura Gómez*). Intended as a fallback avatar for the UI.
+<ResponseField name="data.notes" type="string | null">
+  Internal notes on the customer record (`notas`), or `null` if none have been set.
 </ResponseField>
 
 <ResponseField name="data.createdAt" type="string">
@@ -112,7 +111,7 @@ curl https://api.zippi.app/api/v1/customer/profile \
     "name": "Laura Gómez",
     "phone": "3001234567",
     "email": "laura@example.com",
-    "avatar": "LG",
+    "notes": null,
     "createdAt": "2024-11-03T14:22:00"
   }
 }
@@ -436,8 +435,8 @@ curl https://api.zippi.app/api/v1/customer/favorites \
 ```
 
 <Note>
-  The `require_customer` guard enforces strict `scope=self` isolation — a
-  customer JWT can only access, modify, or delete data that belongs to the
-  authenticated customer's own account. Attempting to access another customer's
-  addresses or profile will return HTTP 403 or 404 (fail-closed).
+  The `require_customer` guard enforces strict ownership — a customer JWT can
+  only access, modify, or delete data that belongs to that customer's own account.
+  Attempting to access another customer's addresses or profile will return HTTP
+  403 or 404 (fail-closed).
 </Note>

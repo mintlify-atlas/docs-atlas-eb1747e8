@@ -1,7 +1,7 @@
 ---
 title: "Authentication API: Login, Token Refresh, and Session"
 sidebarTitle: "Authentication"
-description: "Zippi uses JWT access/refresh tokens. Login returns both; access tokens expire in minutes, refresh tokens in days. Pass Bearer token in Authorization header."
+description: "Zippi uses JWT access/refresh tokens. Login returns both; access tokens expire in 4 minutes, refresh tokens in 30 days. Pass the Bearer token in the Authorization header."
 ---
 
 Zippi's authentication layer is built on JWT (JSON Web Tokens). Every login — whether for a platform admin or a customer — issues a short-lived **access token** and a longer-lived **refresh token**. The access token is used in the `Authorization: Bearer <access_token>` header on every protected request. When the access token expires, exchange the refresh token for a new one without re-entering credentials. Refresh sessions also enforce an **idle timeout**: if no refresh call is made within the configured idle window (default 15 minutes), the session is invalidated and the user must log in again.
@@ -172,11 +172,10 @@ curl -X POST https://api.zippi.app/api/v1/auth/refresh \
 
 ### POST /api/v1/auth/logout
 
-Requires authentication. Invalidates the server-side refresh session associated with the provided refresh token. The access token remains cryptographically valid until it expires, but the session will no longer issue new tokens.
+Invalidates the server-side refresh session associated with the provided refresh token. No `Authorization` header is required — the refresh token in the request body is sufficient to identify the session. The access token remains cryptographically valid until it expires naturally, but the session will no longer issue new tokens.
 
 ```bash
 curl -X POST https://api.zippi.app/api/v1/auth/logout \
-  -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
   -d '{
     "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
@@ -457,7 +456,7 @@ curl https://api.zippi.app/api/v1/auth/access-catalog \
 ```
 
 <ResponseField name="roles" type="array">
-  Full definitions for all 16 console roles. Each entry includes `key`, `label`, `description`, `surface`, `console_access`, `default_scope_type`, `home_route`, `modules`, and `permissions`.
+  Full definitions for all console roles. Each entry includes `key`, `label`, `description`, `surface`, `console_access`, `default_scope_type`, `home_route`, `modules`, and `permissions`.
 </ResponseField>
 
 <ResponseField name="scope_types" type="array">
@@ -580,7 +579,7 @@ curl -X POST https://api.zippi.app/api/v1/auth/customer/register \
   Password for the new account. Minimum 6 characters.
 </ParamField>
 
-**Response** `200 OK`
+**Response** `201 Created`
 
 ```json
 {
@@ -630,7 +629,7 @@ The `user` object returned by login, refresh, and `/me` contains a fully-resolve
 </ResponseField>
 
 <ResponseField name="role" type="string">
-  Normalized role key (e.g., `city_admin`, `super_admin`). See the 16 role keys in [Admin Users](/api/admin-users).
+  Normalized role key (e.g., `city_admin`, `super_admin`). See the role keys in [Admin Users](/api/admin-users).
 </ResponseField>
 
 <ResponseField name="role_label" type="string">

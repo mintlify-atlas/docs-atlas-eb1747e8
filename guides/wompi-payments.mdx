@@ -1,7 +1,7 @@
 ---
 title: "Wompi Payment Gateway Setup and Webhook Handling"
 sidebarTitle: "Wompi Payments"
-description: "Integrate Wompi for card, PSE, and cash payments. Configure sandbox vs production keys, handle TRANSACTION.UPDATED webhooks, and implement idempotent refunds."
+description: "Set up Wompi for card, PSE, and cash payments. Configure sandbox and production keys, verify TRANSACTION.UPDATED webhooks, and handle idempotent retries."
 ---
 
 Zippi uses [Wompi](https://wompi.co) as its payment gateway for card, PSE, and cash payments in the Colombian market. The integration builds a hosted checkout URL, redirects the customer, and listens for `transaction.updated` webhook events to confirm or cancel orders automatically.
@@ -75,14 +75,14 @@ WOMPI_WEBHOOK_PUBLIC_URL=http://localhost:5000/api/v1/payments/wompi/webhook
     When a customer chooses Wompi as payment method, call the checkout creation endpoint. The backend builds a signed redirect URL pointing to `https://checkout.wompi.co/p/` with the integrity signature embedded:
 
     ```bash
-    POST /api/v1/payments/<order_id>/wompi-checkout
+    POST /api/v1/orders/<order_id>/wompi/checkout
     Content-Type: application/json
     Idempotency-Key: <client-generated-uuid>
 
-    { "channel": "admin" }   # valid values: "admin", "whatsapp", "app"
+    { "amount_in_cents": 16500 }
     ```
 
-    Response includes `checkout_url` — redirect the customer to that URL. Valid channels are `admin`, `whatsapp`, and `app`.
+    Response includes `checkout_url` — redirect the customer to that URL.
   </Step>
 
   <Step title="Customer completes payment">

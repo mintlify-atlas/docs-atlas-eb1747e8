@@ -1,10 +1,14 @@
 ---
 title: "Payments API: Wompi Integration and Webhook Handling"
 sidebarTitle: "Payments"
-description: "Wompi payment gateway endpoints including webhook reception, payment status reconciliation, and refund management. Webhook signatures are verified on every call."
+description: "Record payments, create Wompi checkout sessions, and receive webhooks for Zippi orders. Order endpoints live at /api/v1/orders. Webhook verified via HMAC."
 ---
 
-The Payments API connects Zippi orders to the [Wompi](https://wompi.co) payment gateway. It provides endpoints for recording manual payments, initiating Wompi hosted-checkout sessions, listing payment transactions, and receiving asynchronous webhook notifications from Wompi. All order-scoped endpoints require the `orders.financial` permission. The webhook endpoint is unauthenticated (public) but is protected by HMAC checksum verification on every request.
+The Payments API connects Zippi orders to the [Wompi](https://wompi.co) payment gateway. It provides endpoints for recording manual payments, initiating Wompi hosted-checkout sessions, listing payment transactions, and receiving asynchronous webhook notifications from Wompi. All order-scoped endpoints are mounted under `/api/v1/orders` and require the `orders.financial` permission. The webhook endpoint is unauthenticated (public) but is protected by HMAC checksum verification on every request.
+
+<Note>
+  Order-scoped payment endpoints (`/payment-method`, `/payments`, `/wompi/checkout`, `/payment-transactions`) are mounted at `/api/v1/orders/{order_id}/...`. Only the public webhook is registered at `/api/v1/payments/wompi/webhook`.
+</Note>
 
 ## Environment Variables
 
@@ -31,7 +35,7 @@ The Payments API connects Zippi orders to the [Wompi](https://wompi.co) payment 
 
 ---
 
-## PATCH /api/v1/payments/{order_id}/payment-method
+## PATCH /api/v1/orders/{order_id}/payment-method
 
 Updates the payment method associated with an order (e.g. switching from `cash` to `wompi` before collection).
 
@@ -48,7 +52,7 @@ Updates the payment method associated with an order (e.g. switching from `cash` 
 </ParamField>
 
 ```bash
-curl -X PATCH https://api.zippi.co/api/v1/payments/1023/payment-method \
+curl -X PATCH https://api.zippi.co/api/v1/orders/1023/payment-method \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"payment_method": "wompi"}'
@@ -61,7 +65,7 @@ curl -X PATCH https://api.zippi.co/api/v1/payments/1023/payment-method \
 
 ---
 
-## POST /api/v1/payments/{order_id}/payments
+## POST /api/v1/orders/{order_id}/payments
 
 Records a manual payment entry against an order (cash collection, bank transfer confirmation, etc.). The optional `Idempotency-Key` header prevents duplicate entries when the request is retried. Returns `201 Created`.
 
@@ -83,7 +87,7 @@ Records a manual payment entry against an order (cash collection, bank transfer 
 <ParamField body="note" type="string">Internal note attached to this payment record.</ParamField>
 
 ```bash
-curl -X POST https://api.zippi.co/api/v1/payments/1023/payments \
+curl -X POST https://api.zippi.co/api/v1/orders/1023/payments \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: a1b2c3d4-e5f6-7890-abcd-ef1234567890" \
@@ -101,7 +105,7 @@ curl -X POST https://api.zippi.co/api/v1/payments/1023/payments \
 
 ---
 
-## GET /api/v1/payments/{order_id}/payments
+## GET /api/v1/orders/{order_id}/payments
 
 Lists all payment records associated with an order.
 
@@ -112,7 +116,7 @@ Lists all payment records associated with an order.
 <ParamField path="order_id" type="integer" required>Numeric order ID.</ParamField>
 
 ```bash
-curl -X GET https://api.zippi.co/api/v1/payments/1023/payments \
+curl -X GET https://api.zippi.co/api/v1/orders/1023/payments \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -123,7 +127,7 @@ curl -X GET https://api.zippi.co/api/v1/payments/1023/payments \
 
 ---
 
-## POST /api/v1/payments/{order_id}/wompi/checkout
+## POST /api/v1/orders/{order_id}/wompi/checkout
 
 Creates a Wompi hosted-checkout session for an order. Returns the checkout URL and reference that the customer uses to complete payment. Returns `201 Created`.
 
@@ -144,7 +148,7 @@ Creates a Wompi hosted-checkout session for an order. Returns the checkout URL a
 <ParamField body="redirect_url" type="string">Override the default `WOMPI_REDIRECT_URL` for this specific checkout. Useful for deep links.</ParamField>
 
 ```bash
-curl -X POST https://api.zippi.co/api/v1/payments/1023/wompi/checkout \
+curl -X POST https://api.zippi.co/api/v1/orders/1023/wompi/checkout \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: c9d8e7f6-a5b4-3210-fedc-ba0987654321" \
@@ -164,7 +168,7 @@ curl -X POST https://api.zippi.co/api/v1/payments/1023/wompi/checkout \
 
 ---
 
-## GET /api/v1/payments/{order_id}/payment-transactions
+## GET /api/v1/orders/{order_id}/payment-transactions
 
 Returns the list of Wompi transaction records associated with an order. Each record reflects a Wompi gateway event and includes the gateway status, amounts, and timestamps.
 
@@ -175,7 +179,7 @@ Returns the list of Wompi transaction records associated with an order. Each rec
 <ParamField path="order_id" type="integer" required>Numeric order ID.</ParamField>
 
 ```bash
-curl -X GET https://api.zippi.co/api/v1/payments/1023/payment-transactions \
+curl -X GET https://api.zippi.co/api/v1/orders/1023/payment-transactions \
   -H "Authorization: Bearer <token>"
 ```
 

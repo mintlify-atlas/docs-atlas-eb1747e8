@@ -1,7 +1,7 @@
 ---
-title: "Products and Catalog Management API Reference"
+title: "Zippi Products and Catalog Management API Reference"
 sidebarTitle: "Products & Catalog"
-description: "CRUD endpoints for products, categories, and add-on options. Action-level permissions control who can edit prices, images, availability, or archive items."
+description: "Full lifecycle management for catalog products and option groups. Action-level permissions gate price, cost, image, tax, and availability edits per role."
 ---
 
 The Products and Catalog endpoints expose full lifecycle management for a business's sellable items and their add-on option groups. All write operations are permission-gated at the action level — holding `catalog.manage` implies all fine-grained catalog actions, but individual permissions such as `catalog.edit_price` or `catalog.edit_availability` can be granted in isolation for operators who should only control a subset of the catalog.
@@ -163,6 +163,38 @@ curl -X GET https://api.zippi.app/api/v1/business/products/42 \
   -H "Authorization: Bearer <token>"
 ```
 
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id_producto": 42,
+    "nombre": "Bandeja Paisa",
+    "descripcion": "Frijoles, chicharrón, arroz, huevo y aguacate",
+    "precio": 2200000,
+    "precio_costo": 900000,
+    "categoria": "Platos fuertes",
+    "imagen_url": "https://cdn.zippi.app/productos/bandeja-paisa.jpg",
+    "tasa_impuesto": 0,
+    "activo": true,
+    "opciones": []
+  }
+}
+```
+
+<ResponseField name="imagen_url" type="string | null">
+  Absolute URL to the product image, or `null` if no image has been set.
+</ResponseField>
+
+<ResponseField name="tasa_impuesto" type="integer">
+  Tax rate in basis points (e.g. `800` = 8%). `0` means no tax is applied.
+</ResponseField>
+
+<ResponseField name="opciones" type="array">
+  List of option group IDs linked to this product. Expand each via `GET /options/:id`.
+</ResponseField>
+
 ---
 
 ### PUT /api/v1/business/products/:id  ·  PATCH /api/v1/business/products/:id
@@ -242,12 +274,62 @@ Option groups let customers customize their order — e.g. "Choose your sauce" o
 
 ### GET /api/v1/business/options
 
-Returns all add-on option groups for the business scope.
+Returns all add-on option groups for the business scope. Results are filtered by scope automatically — a `business_branch_admin` sees only the option groups linked to their branch.
 
 ```bash
 curl -X GET https://api.zippi.app/api/v1/business/options \
   -H "Authorization: Bearer <token>"
 ```
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id_opcion": 7,
+      "nombre": "Elige tu salsa",
+      "obligatorio": true,
+      "min_selecciones": 1,
+      "max_selecciones": 1,
+      "activo": true,
+      "items": [
+        {"nombre": "Hogao", "precio_adicional": 0},
+        {"nombre": "Chimichurri", "precio_adicional": 50000}
+      ]
+    }
+  ]
+}
+```
+
+<ResponseField name="id_opcion" type="integer">
+  Internal primary key of the option group.
+</ResponseField>
+
+<ResponseField name="nombre" type="string">
+  Display name of the option group shown to customers.
+</ResponseField>
+
+<ResponseField name="obligatorio" type="boolean">
+  Whether a selection is required before the customer can add the product to their cart.
+</ResponseField>
+
+<ResponseField name="min_selecciones" type="integer">
+  Minimum number of items the customer must select from this group.
+</ResponseField>
+
+<ResponseField name="max_selecciones" type="integer">
+  Maximum number of items the customer may select from this group.
+</ResponseField>
+
+<ResponseField name="activo" type="boolean">
+  `true` if the option group is visible to customers during ordering.
+</ResponseField>
+
+<ResponseField name="items" type="array">
+  List of selectable items, each with `nombre` (string) and `precio_adicional` (integer centavos).
+</ResponseField>
 
 ---
 

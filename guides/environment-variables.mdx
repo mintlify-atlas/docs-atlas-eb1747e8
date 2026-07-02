@@ -1,5 +1,5 @@
 ---
-title: "Environment Variables Reference for Zippi"
+title: "Zippi Backend Environment Variables Complete Reference"
 sidebarTitle: "Environment Variables"
 description: "Complete reference for all Zippi backend environment variables: app config, database, JWT, CORS, integrations, storage, Redis, Celery, and LLM settings."
 ---
@@ -69,18 +69,30 @@ Controls which browser origins may call the API. The defaults cover both Vite de
 | `CORS_ALLOWED_ORIGINS`  | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174`           | No       | Comma-separated list of allowed origins for CORS pre-flight requests.    |
 | `CORS_ALLOW_CREDENTIALS`| `true`                                                                                               | No       | Whether cookies and `Authorization` headers are included in CORS requests.|
 
+## URLs
+
+Public base URLs used to build absolute links in outbound messages, webhooks, and redirects. These must be updated whenever the deployment domain changes.
+
+| Variable               | Default                      | Required | Description                                                                              |
+| ---------------------- | ---------------------------- | -------- | ---------------------------------------------------------------------------------------- |
+| `BACKEND_PUBLIC_URL`   | `http://localhost:5000`      | No       | Publicly reachable backend base URL. Used to construct webhook callback URLs.            |
+| `ADMIN_FRONTEND_URL`   | `http://localhost:5173`      | No       | Admin panel URL. Used in email links and redirect targets for admin actions.             |
+| `WEBHOOK_BASE_URL`     | `http://localhost:5000`      | No       | Base URL registered with third-party services (WhatsApp, Wompi) for webhook delivery.   |
+
 ## WhatsApp
 
 Credentials for the Meta Cloud API used by the conversational bot. All fields are optional for local development — the bot degrades gracefully when not configured.
 
-| Variable                      | Default                        | Required       | Description                                                               |
-| ----------------------------- | ------------------------------ | -------------- | ------------------------------------------------------------------------- |
-| `WHATSAPP_API_VERSION`        | `v22.0`                        | No             | Meta Graph API version, e.g. `v22.0`.                                    |
-| `WHATSAPP_PHONE_NUMBER_ID`    | —                              | **Yes (prod)** | Numeric phone number ID from the Meta Business dashboard.                 |
-| `WHATSAPP_BUSINESS_ACCOUNT_ID`| —                              | **Yes (prod)** | WhatsApp Business Account (WABA) ID.                                      |
-| `WHATSAPP_ACCESS_TOKEN`       | —                              | **Yes (prod)** | Permanent or system-user access token with `whatsapp_business_messaging` scope. |
-| `WHATSAPP_VERIFY_TOKEN`       | —                              | **Yes (prod)** | Arbitrary secret string used to verify webhook subscriptions with Meta.   |
-| `WHATSAPP_WEBHOOK_SECRET`     | —                              | **Yes (prod)** | HMAC secret to validate the `X-Hub-Signature-256` header on incoming webhooks. |
+| Variable                        | Default                          | Required       | Description                                                               |
+| ------------------------------- | -------------------------------- | -------------- | ------------------------------------------------------------------------- |
+| `WHATSAPP_API_VERSION`          | `v22.0`                          | No             | Meta Graph API version, e.g. `v22.0`.                                    |
+| `WHATSAPP_GRAPH_BASE_URL`       | `https://graph.facebook.com`     | No             | Meta Graph API base URL used by the WhatsApp client.                      |
+| `WHATSAPP_PHONE_NUMBER_ID`      | —                                | **Yes (prod)** | Numeric phone number ID from the Meta Business dashboard.                 |
+| `WHATSAPP_BUSINESS_ACCOUNT_ID`  | —                                | **Yes (prod)** | WhatsApp Business Account (WABA) ID.                                      |
+| `WHATSAPP_ACCESS_TOKEN`         | —                                | **Yes (prod)** | Permanent or system-user access token with `whatsapp_business_messaging` scope. |
+| `WHATSAPP_VERIFY_TOKEN`         | —                                | **Yes (prod)** | Arbitrary secret string used to verify webhook subscriptions with Meta.   |
+| `WHATSAPP_WEBHOOK_SECRET`       | —                                | **Yes (prod)** | HMAC secret to validate the `X-Hub-Signature-256` header on incoming webhooks. |
+| `WHATSAPP_DEFAULT_COUNTRY_CODE` | `57`                             | No             | Country dialing code prepended when normalizing phone numbers (57 = Colombia). |
 
 ## Wompi Payments
 
@@ -114,11 +126,15 @@ Controls where uploaded files (images, receipts) are stored. Switch `STORAGE_DRI
 
 ## Redis & Celery
 
-Redis serves as both the Celery message broker and the task result backend. All three variables default to the same local Redis instance.
+Redis serves as both the Celery message broker and the task result backend. Set `REDIS_URL` directly or configure the individual `REDIS_*` component variables — `REDIS_URL` takes precedence when present.
 
 | Variable                | Default                        | Required | Description                                                               |
 | ----------------------- | ------------------------------ | -------- | ------------------------------------------------------------------------- |
-| `REDIS_URL`             | `redis://127.0.0.1:6379/0`     | No       | Redis connection URL used by the application layer.                       |
+| `REDIS_HOST`            | `127.0.0.1`                    | No       | Redis server hostname or IP address.                                      |
+| `REDIS_PORT`            | `6379`                         | No       | Redis server port.                                                        |
+| `REDIS_DB`              | `0`                            | No       | Redis logical database index (0–15).                                      |
+| `REDIS_PASSWORD`        | _(empty)_                      | No       | Redis AUTH password. Leave blank for instances without authentication.    |
+| `REDIS_URL`             | `redis://127.0.0.1:6379/0`     | No       | Full Redis connection URL. Overrides `REDIS_HOST`/`REDIS_PORT`/`REDIS_DB` when set. |
 | `CELERY_BROKER_URL`     | `redis://127.0.0.1:6379/0`     | No       | Celery broker URL. Defaults to the same Redis instance as `REDIS_URL`.   |
 | `CELERY_RESULT_BACKEND` | `redis://127.0.0.1:6379/0`     | No       | Where Celery stores task results. Can be set to a different Redis DB.     |
 
@@ -145,6 +161,29 @@ These variables tune the platform's operational behaviour without requiring code
 | `DEFAULT_SERVICE_FEE_BILL_PAYMENT`| `5000`  | No       | Default service fee for bill payment errands.                                                   |
 | `DEFAULT_SERVICE_FEE_COPIES`      | `5000`  | No       | Default service fee for copy/print errands.                                                     |
 | `DEFAULT_SERVICE_FEE_CUSTOM_ERRAND`| `6000` | No       | Default service fee for custom / miscellaneous errands.                                         |
+
+## Default Admin
+
+Bootstrap credentials for the initial administrator account, created by the seed script on a fresh install. Change `DEFAULT_ADMIN_PASSWORD` immediately after first login and never use these values in production.
+
+| Variable                  | Default                   | Required       | Description                                                              |
+| ------------------------- | ------------------------- | -------------- | ------------------------------------------------------------------------ |
+| `DEFAULT_ADMIN_NAME`      | `Administrador Zippi`     | No             | Display name for the seeded admin account.                               |
+| `DEFAULT_ADMIN_EMAIL`     | `admin@zippi.local`       | No             | Email address for the seeded admin account.                              |
+| `DEFAULT_ADMIN_PASSWORD`  | _(empty)_                 | **Yes (prod)** | Password for the seeded admin account. Must be set before running seeds. |
+
+## Mail
+
+SMTP settings for transactional email (password resets, activation links). All fields are optional for local development — email sending is skipped gracefully when the server is not configured.
+
+| Variable               | Default  | Required | Description                                                                     |
+| ---------------------- | -------- | -------- | ------------------------------------------------------------------------------- |
+| `MAIL_SERVER`          | —        | No       | SMTP server hostname (e.g. `smtp.gmail.com`).                                   |
+| `MAIL_PORT`            | `587`    | No       | SMTP server port. Use `587` for TLS or `465` for SSL.                           |
+| `MAIL_USERNAME`        | —        | No       | SMTP authentication username.                                                   |
+| `MAIL_PASSWORD`        | —        | No       | SMTP authentication password.                                                   |
+| `MAIL_USE_TLS`         | `true`   | No       | Enable STARTTLS. Set to `false` only for local mail catchers (e.g. Mailhog).   |
+| `MAIL_DEFAULT_SENDER`  | —        | No       | From address used for all outbound emails (e.g. `noreply@zippi.co`).            |
 
 ## LLM (Local AI)
 

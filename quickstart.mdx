@@ -1,7 +1,7 @@
 ---
-title: "Get Started with Zippi in Under 10 Minutes"
+title: "Quickstart: Run the Zippi Platform Locally in Minutes"
 sidebarTitle: "Quickstart"
-description: "Run the Zippi backend and frontend locally. Covers virtualenv setup, MySQL config, migrations, and the Vite dev server in 6 steps."
+description: "Run the Zippi backend and frontend locally. Covers virtualenv setup, MySQL configuration, migrations, seed data, and the Vite dev server."
 ---
 
 This guide walks you through cloning the Zippi monorepo, configuring your local environment, running database migrations, seeding initial data, and starting both servers. By the end you will have the Flask API running on port 5000 and the Vite frontend running on port 5174.
@@ -17,7 +17,7 @@ This guide walks you through cloning the Zippi monorepo, configuring your local 
       ```
 
       ```bash Verify runtimes
-      python --version       # Python 3.11+ required
+      python --version       # Python 3.10+ required
       node --version         # Node 18+ required
       mysql --version        # MySQL 8 required
       redis-cli ping         # should reply PONG
@@ -28,7 +28,7 @@ This guide walks you through cloning the Zippi monorepo, configuring your local 
 
     | Dependency | Minimum version | Notes |
     |-----------|----------------|-------|
-    | Python | 3.11 | 3.10 also works per backend README |
+    | Python | 3.10 | Python 3.10 or newer required |
     | Node.js | 18 | LTS recommended |
     | MySQL | 8.0 | Create the `zippi_db` database before running migrations |
     | Redis | 6+ | Required for Celery workers; optional for basic API usage |

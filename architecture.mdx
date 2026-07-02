@@ -1,5 +1,5 @@
 ---
-title: "Zippi System Architecture and Tech Stack"
+title: "Zippi Platform Architecture: Backend and Frontend Guide"
 sidebarTitle: "Architecture"
 description: "Explore Zippi's monorepo layout, layered backend architecture (presentation → application → domain → infrastructure), and frontend portal structure."
 ---
@@ -19,12 +19,16 @@ Zippi/
 │   │   │   ├── app_factory.py         # create_app(), Flask factory
 │   │   │   └── extensions.py          # db, migrate singletons
 │   │   ├── config/
-│   │   │   ├── settings.py            # Pydantic settings from .env
+│   │   │   ├── settings.py            # Dataclass settings loaded from .env
 │   │   │   └── logging.py             # Structured log config
 │   │   ├── infrastructure/
-│   │   │   └── db/
-│   │   │       ├── models.py          # SQLAlchemy ORM models
-│   │   │       └── session.py         # Engine + session factory
+│   │   │   ├── cache/                 # Redis client
+│   │   │   ├── db/
+│   │   │   │   ├── models/            # SQLAlchemy ORM model modules
+│   │   │   │   └── session.py         # Engine + session factory
+│   │   │   ├── external/              # Third-party API clients (storage, WhatsApp)
+│   │   │   ├── repositories/          # SQLAlchemy repository base classes
+│   │   │   └── tasks/                 # Celery app and job definitions
 │   │   ├── modules/                   # One directory per domain feature
 │   │   │   ├── auth/                  # Authentication, RBAC, guards
 │   │   │   ├── business/              # Business portal, scoping
@@ -45,7 +49,7 @@ Zippi/
 │   │   │   ├── service_types/         # Service type catalog
 │   │   │   └── whatsapp/              # WhatsApp Cloud API (optional)
 │   │   └── shared/
-│   │       ├── domain/                # Shared domain primitives
+│   │       ├── domain/                # Order FSM, role experience, transition rules
 │   │       ├── exceptions/            # HttpError and domain errors
 │   │       └── observability/         # Prometheus metrics
 │   ├── scripts/
@@ -55,23 +59,19 @@ Zippi/
 │   ├── tests/
 │   │   ├── by_role/                   # Per-role contract tests
 │   │   ├── unit/                      # Unit tests
-│   │   └── integration/               # Integration tests
+│   │   ├── integration/               # Integration tests
+│   │   ├── e2e/                       # End-to-end tests
+│   │   └── security/                  # Security-focused tests
 │   ├── manage.py                      # Flask dev server entrypoint
 │   ├── requirements.txt               # Production dependencies
 │   └── requirements-dev.txt           # Dev + test dependencies
 └── frontend/
-    ├── src/
-    │   ├── modules/                   # Feature modules (mirrors backend)
-    │   │   └── business/
-    │   │       └── permissions.ts     # FE permission mirror of rbac.py
-    │   └── portals/                   # One directory per surface
-    │       ├── superadmin/
-    │       ├── admin/
-    │       ├── business/
-    │       ├── branch/
-    │       ├── courier/
-    │       └── client/
-    └── vite.config.ts
+    └── src/
+        ├── admin/                     # Admin portal pages and contexts
+        ├── app/                       # App router, layouts, providers
+        ├── customer/                  # Customer-facing pages and contexts
+        ├── modules/                   # Feature modules (mirrors backend)
+        └── shared/                    # Shared components, utils, types
 ```
 
 ## Flask App Factory
@@ -113,9 +113,9 @@ Every module under `backend/app/modules/` follows the same four-layer structure.
 
 | Layer | Responsibility | Example files |
 |-------|---------------|---------------|
-| **Presentation** | HTTP routes, request parsing, response serialization, guards | `routes.py`, `guards.py`, `serializers.py` |
+| **Presentation** | HTTP routes, request parsing, response serialization, guards | `routes.py`, `guards.py`, `controllers.py` |
 | **Application** | Use-case orchestration, transaction boundaries | `services.py`, `use_cases.py` |
-| **Domain** | Business rules, entities, state machine, RBAC | `rbac.py`, `entities.py`, `order_fsm.py` |
+| **Domain** | Business rules, entities, state machine, RBAC | `rbac.py`, `entities.py`, `order_state_machine.py` |
 | **Infrastructure** | SQLAlchemy repositories, Redis, S3, external APIs | `repositories.py`, `orm.py` |
 
 ### Module Registry
@@ -185,20 +185,18 @@ The API itself does not require the Celery worker to be running for core order o
 
 ## Frontend Portal Structure
 
-The frontend is a single Vite application. The `src/portals/` directory contains one sub-directory per portal surface. The router loads the correct portal based on the `surface` field in the JWT payload, which is set server-side from `ROLE_DEFINITIONS` in `rbac.py`.
+The frontend is a single Vite application. Portal surfaces are driven by the `surface` field in the JWT payload, which is set server-side from `ROLE_DEFINITIONS` in `rbac.py`. The `src/` directory is organized by functional area:
 
 ```text
-frontend/src/portals/
-├── superadmin/    → super_admin, platform_admin
-├── admin/         → country_admin, city_admin, zippi_branch_admin,
-│                    operations_admin, finance_admin, support_agent
-├── business/      → business_owner, business_admin
-├── branch/        → business_branch_admin, kitchen_staff, cashier, waiter
-├── courier/       → delivery_driver
-└── client/        → customer
+frontend/src/
+├── admin/      → Admin panel (country_admin, city_admin, zippi_branch_admin,
+│                  operations_admin, finance_admin, support_agent)
+├── app/        → App router, layouts, providers, stores
+├── customer/   → Client app (customer)
+└── modules/    → Feature modules shared across portal surfaces
 ```
 
-Each portal surface imports its own permission helper that mirrors `backend/app/modules/auth/domain/rbac.py`. The FE uses permissions only for rendering decisions (show/hide buttons, routes). The BE re-validates every request regardless of what the FE claims.
+Operative surfaces (`kitchen_app`, `cashier_app`, `waiter_app`, `courier_app`) are rendered within the app router based on the authenticated role's `surface` value. The frontend uses a permission helper that mirrors `backend/app/modules/auth/domain/rbac.py` for rendering decisions (show/hide buttons, routes). The backend re-validates every request regardless of what the frontend claims.
 
 <Note>
   **VITE_USE_MOCKS:** Set `VITE_USE_MOCKS=true` in `frontend/.env` to run the frontend with static in-memory mock data. This bypasses all API calls and is intended for UI development only. Mocks do not enforce permissions or tenant scoping.
@@ -212,4 +210,4 @@ Each portal surface imports its own permission helper that mirrors `backend/app/
 | **WhatsApp Cloud API** | Order intake and status notifications via Meta Graph v22.0 | `WHATSAPP_*` |
 | **AWS S3** | Evidence photo and document storage (optional; defaults to local filesystem) | `AWS_*` |
 | **SMTP** | Transactional email | `MAIL_*` |
-| **LLM local** | Optional fine-tuned TinyLlama model for the WhatsApp bot | `LLM_LOCAL_*` |
+| **LLM local** | Optional fine-tuned model for the WhatsApp bot | `LLM_LOCAL_*` |

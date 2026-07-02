@@ -1,7 +1,7 @@
 ---
-title: "Roles and Portal Surfaces in Zippi"
+title: "Roles and Portal Surfaces in Zippi — 16-Role Reference"
 sidebarTitle: "Roles & Portals"
-description: "Zippi defines 16 roles organized across 6 portal surfaces. Each role has a dedicated home route, module set, and permission scope."
+description: "Zippi defines 16 roles across 9 portal surfaces. Each role has a fixed home route, module set, default scope type, and permission set."
 ---
 
 Every user in Zippi is assigned exactly one role. That role determines which portal surface is rendered in the frontend, which API endpoints are accessible, which database rows are visible through the tenant scope filter, and which actions are permitted. The role catalog is defined in `backend/app/modules/auth/domain/rbac.py` and is the single source of truth — roles cannot be invented at runtime.
@@ -79,20 +79,59 @@ The business portal is for users who own or administer one or more brands. It co
 
 ---
 
-### `business_branch_portal` — Local Operations
+### `business_branch_portal` — Branch Admin
 
-The branch portal covers the day-to-day operation of one physical location. Four roles share this surface, each entering a dramatically different focused screen for their specific job.
+The branch portal is the surface for `business_branch_admin`. It gives full operational control over one physical business location — catalog, orders, kitchen, cashier, waiter, payments, and reports — all scoped to that single branch.
 
-**Roles:** `business_branch_admin`, `kitchen_staff`, `cashier`, `waiter`
+**Role:** `business_branch_admin`
 
-| Role | Experience | Permitted actions |
-|------|-----------|------------------|
-| `business_branch_admin` | Full branch admin panel | All branch operations including catalog, orders, kitchen, cashier, waiter, payments, reports |
-| `kitchen_staff` | Command-ticket screen with timer and alarm | `orders.prepare`, `orders.pack`, `catalog.edit_availability` |
-| `cashier` | Till screen (open/close shift, collect payments, arqueo) | `orders.close`, `orders.collect_payment`, `cashier.open`, `cashier.close`, `cashier.reconcile` |
-| `waiter` | Table map and order intake | `orders.accept`, `orders.reject`, `waiter.*` |
+**Default scope:** `business_branch` · **Home route:** `/app/business/branch`
 
 **Modules (BUSINESS_BRANCH_MODULES):** `business_branch_portal`, `orders`, `kitchen`, `cashier`, `waiter`, `catalog`, `product_options`, `payments`, `support`, `reports`
+
+**Permissions:** `dashboard`, `business_branches`, `catalog`, `orders`, `kitchen`, `cashier`, `waiter`, `payments`, `incidents`, `reports` (`.read` + `.manage` per module).
+
+---
+
+### `kitchen_app` — Kitchen Commands Screen
+
+The kitchen app is the focused command-ticket surface for `kitchen_staff`. It shows the live preparation queue with priority, timers, and alarms — no dashboards, no financial data.
+
+**Role:** `kitchen_staff`
+
+**Default scope:** `business_branch` · **Home route:** `/app/business/kitchen`
+
+**Modules:** `kitchen_app`, `orders`, `catalog`
+
+**Permissions:** `orders.read`, `orders.prepare`, `orders.pack`, `kitchen.read`, `kitchen.manage`, `catalog.read`, `catalog.edit_availability`
+
+---
+
+### `cashier_app` — Till and Shift Screen
+
+The cashier app is the dedicated till surface for the `cashier` role. It covers opening and closing shifts, registering payments, reconciling cash vs. Wompi, and arqueo.
+
+**Role:** `cashier`
+
+**Default scope:** `business_branch` · **Home route:** `/app/business/cashier`
+
+**Modules:** `cashier_app`, `orders`, `payments`, `reports`
+
+**Permissions:** `orders.read`, `orders.close`, `orders.collect_payment`, `cashier.read`, `cashier.reconcile`, `cashier.open`, `cashier.close`, `payments.read`, `reports.read`
+
+---
+
+### `waiter_app` — Table Map and Order Intake
+
+The waiter app is the table-service surface for the `waiter` role. It shows the dining room map, order intake, and bridges kitchen and cashier.
+
+**Role:** `waiter`
+
+**Default scope:** `business_branch` · **Home route:** `/app/business/waiter`
+
+**Modules:** `waiter_app`, `orders`, `kitchen`, `cashier`
+
+**Permissions:** `orders.read`, `orders.accept`, `orders.reject`, `waiter.read`, `waiter.manage`, `kitchen.read`, `cashier.read`
 
 ---
 

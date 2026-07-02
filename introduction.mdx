@@ -1,7 +1,7 @@
 ---
-title: "Zippi: Delivery & Business Operations Platform"
+title: "Zippi: Delivery and Business Operations Platform Overview"
 sidebarTitle: "Introduction"
-description: "Zippi is a multi-tenant delivery platform with role-based portals for customers, couriers, businesses, and administrators — all backed by a single Flask API."
+description: "Zippi is a multi-tenant delivery platform. Nine role-based portal surfaces serve customers, couriers, businesses, and admins through one Flask API."
 ---
 
 Zippi is a full-stack delivery and business operations platform built to serve every actor in the food and local commerce delivery chain — from the customer placing an order on their phone to the super administrator overseeing the entire platform. A single Flask API powers sixteen distinct roles, each of which enters its own dedicated portal surface with a tailored interface, a scoped dataset, and a permission set tuned to that role's job. No role sees what belongs to another tenant or role group.
@@ -12,10 +12,10 @@ At its core, Zippi orchestrates the complete lifecycle of a delivery order: crea
 
 Zippi is organized as a **monorepo** with two top-level directories:
 
-```
+```text
 Zippi/
 ├── backend/     # Flask (Python) REST API
-└── frontend/    # Vue/React (TypeScript + Vite) portal application
+└── frontend/    # React/Vue (TypeScript + Vite) portal application
 ```
 
 The backend exposes a versioned REST API at `/api/v1` and handles authentication, RBAC, multi-tenant scoping, order state management, payments, and all business logic. The frontend is a single Vite application that renders the correct portal surface based on the authenticated user's role.
@@ -45,9 +45,9 @@ Zippi defines exactly 16 roles spanning from global platform administration down
 
 See [Roles & Portals](/concepts/roles-and-portals) for the complete reference including home routes, scope types, and module lists for every role.
 
-## The 5 Portal Surfaces
+## Portal Surfaces
 
-Each role is mapped to one of the portal surfaces below. The surface controls which part of the frontend application is rendered, which modules are in the sidebar, and which API endpoints are accessible.
+Each role is mapped to one of nine portal surfaces defined in `ROLE_DEFINITIONS`. The surface controls which part of the frontend application is rendered, which modules appear in the sidebar, and which API endpoints are accessible.
 
 <CardGroup cols={2}>
   <Card title="Superadmin Panel" icon="shield-halved">
@@ -60,7 +60,16 @@ Each role is mapped to one of the portal surfaces below. The surface controls wh
     Brand and multi-location management for `business_owner` and `business_admin`. Covers the full catalog, orders, settlements, analytics, and notifications scoped to a business group or individual brand.
   </Card>
   <Card title="Business Branch Portal" icon="utensils">
-    Day-to-day local operations for `business_branch_admin`, `kitchen_staff`, `cashier`, and `waiter`. Each of these roles lands in a focused screen — the kitchen sees only command tickets; the cashier sees only the till.
+    Local operations for `business_branch_admin` — manages a single business location, its catalog, orders, kitchen coordination, and daily cash reconciliation.
+  </Card>
+  <Card title="Kitchen App" icon="fire-burner">
+    Command-ticket screen for `kitchen_staff`. Shows the live preparation queue with priority and timer; limited to `kitchen.read` and `kitchen.manage` permissions.
+  </Card>
+  <Card title="Cashier App" icon="cash-register">
+    Till management for `cashier`. Covers order payment collection, till opening/closing, and shift reconciliation (arqueo).
+  </Card>
+  <Card title="Waiter App" icon="bell-concierge">
+    Table-service screen for `waiter`. Handles dine-in orders, table management, and routing requests to the kitchen or cashier.
   </Card>
   <Card title="Courier App" icon="motorcycle">
     Mobile delivery experience for `delivery_driver`. Shows assigned deliveries, allows evidence uploads, tracks the courier's personal cash balance, and handles incident reporting.
@@ -74,13 +83,13 @@ Each role is mapped to one of the portal surfaces below. The surface controls wh
 
 | Layer | Technology |
 |-------|-----------|
-| Backend API | Python 3.11+, Flask, SQLAlchemy |
+| Backend API | Python 3.10+, Flask, SQLAlchemy |
 | Database | MySQL 8 |
 | Async workers | Redis + Celery |
 | Payments | Wompi (sandbox & production) |
 | Messaging | WhatsApp Cloud API (Meta Graph v22.0) |
 | File storage | Local filesystem or AWS S3 |
-| Frontend | TypeScript, Vue/React, Vite |
+| Frontend | TypeScript, React/Vue, Vite |
 | CI | GitHub Actions (ruff, bandit, pytest, tsc) |
 
 The backend follows a domain-driven design with four explicit layers: **presentation** (Flask blueprints and guards), **application** (use-case services), **domain** (entities, RBAC, state machine), and **infrastructure** (SQLAlchemy repositories, Redis, S3). See [Architecture](/architecture) for the full breakdown.
@@ -98,6 +107,6 @@ The backend follows a domain-driven design with four explicit layers: **presenta
     Full reference for all 16 roles, their surfaces, scopes, and module sets.
   </Card>
   <Card title="Order State Machine" icon="diagram-project" href="/concepts/order-state-machine">
-    The 13-state happy path, 7 exception states, and the complete transition table.
+    The happy-path order states, exception states, and the complete transition table.
   </Card>
 </CardGroup>

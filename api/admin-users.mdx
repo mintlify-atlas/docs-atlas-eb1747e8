@@ -4,7 +4,7 @@ sidebarTitle: "Admin Users"
 description: "CRUD endpoints for Zippi admin accounts. Requires admins.read or admins.manage permissions. Each admin is assigned a role, scope type, and scope ID."
 ---
 
-Admin users are the humans who operate the Zippi platform — from super administrators with global access to branch-level cashiers scoped to a single business location. Every admin account is bound to a **role**, a **scope type**, and (for non-global scopes) a **scope ID** that together determine what data and actions the account can access. All endpoints in this section are mounted under `POST /api/v1/auth/` and protected by the `admins.read` or `admins.manage` permission.
+Admin users are the humans who operate the Zippi platform — from super administrators with global access to branch-level cashiers scoped to a single business location. Every admin account is bound to a **role**, a **scope type**, and (for non-global scopes) a **scope ID** that together determine what data and actions the account can access. All endpoints in this section are mounted under `/api/v1/auth/` and protected by the `admins.read` or `admins.manage` permission.
 
 ## Role reference
 
@@ -203,7 +203,7 @@ Returns the same admin object shape as the list endpoint, including the resolved
 
 ---
 
-## GET /api/v1/auth/admins/:id
+## GET /api/v1/auth/admins/:admin\_id
 
 Requires `admins.read` permission. Returns the serialized admin object for the given admin ID.
 
@@ -214,7 +214,7 @@ curl https://api.zippi.app/api/v1/auth/admins/12 \
 
 **Path parameters**
 
-<ParamField path="id" type="integer" required>
+<ParamField path="admin_id" type="integer" required>
   The numeric admin ID (`id_admin`).
 </ParamField>
 
@@ -249,7 +249,7 @@ Returns `404 Not Found` if the admin does not exist.
 
 ---
 
-## GET /api/v1/auth/admins/:id/detail
+## GET /api/v1/auth/admins/:admin\_id/detail
 
 Requires `admins.read` permission. Returns the admin record plus an enriched `access` breakdown (modules with routes and labels, permissions with descriptions) and a top-level `event_summary`.
 
@@ -260,7 +260,7 @@ curl https://api.zippi.app/api/v1/auth/admins/12/detail \
 
 **Path parameters**
 
-<ParamField path="id" type="integer" required>
+<ParamField path="admin_id" type="integer" required>
   The numeric admin ID.
 </ParamField>
 
@@ -270,7 +270,7 @@ curl https://api.zippi.app/api/v1/auth/admins/12/detail \
 {
   "success": true,
   "data": {
-    "admin": { "...": "same shape as GET /admins/:id" },
+    "admin": { "...": "same shape as GET /admins/:admin_id" },
     "access": {
       "surface": "admin_panel",
       "home_route": "/app/admin/city",
@@ -353,7 +353,7 @@ curl https://api.zippi.app/api/v1/auth/admins/12/detail \
 
 ---
 
-## GET /api/v1/auth/admins/:id/events
+## GET /api/v1/auth/admins/:admin\_id/events
 
 Requires `admins.read` permission. Returns the paginated activity log for a specific admin — events where this admin was either the actor or the target. Results are ordered by `fecha_evento` descending.
 
@@ -364,7 +364,7 @@ curl "https://api.zippi.app/api/v1/auth/admins/12/events?page=1&page_size=20" \
 
 **Path parameters**
 
-<ParamField path="id" type="integer" required>
+<ParamField path="admin_id" type="integer" required>
   The numeric admin ID.
 </ParamField>
 
@@ -424,7 +424,7 @@ curl "https://api.zippi.app/api/v1/auth/admins/12/events?page=1&page_size=20" \
 
 ---
 
-## POST /api/v1/auth/admins/:id/revoke-sessions
+## POST /api/v1/auth/admins/:admin\_id/revoke-sessions
 
 Requires `admins.manage` permission. Increments the target admin's `token_version`, immediately invalidating all their active JWT sessions. Any currently-active access token for that admin will be rejected on the next token validation call. A `sessions_revoked` audit event is recorded.
 
@@ -435,7 +435,7 @@ curl -X POST https://api.zippi.app/api/v1/auth/admins/12/revoke-sessions \
 
 **Path parameters**
 
-<ParamField path="id" type="integer" required>
+<ParamField path="admin_id" type="integer" required>
   The numeric admin ID whose sessions should be revoked.
 </ParamField>
 
@@ -466,7 +466,7 @@ curl -X POST https://api.zippi.app/api/v1/auth/admins/12/revoke-sessions \
 
 ---
 
-## PATCH /api/v1/auth/admins/:id
+## PATCH /api/v1/auth/admins/:admin\_id
 
 Requires `admins.manage` permission. Partially updates an admin account. At least one valid field must be present in the request body. If `password` is changed, the admin's `token_version` is incremented and all active sessions are revoked automatically.
 
@@ -489,7 +489,7 @@ curl -X PATCH https://api.zippi.app/api/v1/auth/admins/12 \
 
 **Path parameters**
 
-<ParamField path="id" type="integer" required>
+<ParamField path="admin_id" type="integer" required>
   The numeric admin ID to update.
 </ParamField>
 
@@ -533,12 +533,12 @@ Returns the updated admin object. The `tipo_evento` in the audit log will be one
 
 ---
 
-## DELETE /api/v1/auth/admins/:id
+## DELETE /api/v1/auth/admins/:admin\_id
 
 Requires `admins.manage` permission. Deactivates an admin account.
 
 <Warning>
-  Deleting an admin via this endpoint is a **soft delete** — it sets `activo = false` and increments `token_version` to immediately invalidate all active sessions. The admin record is **not removed** from the database. To reactivate a soft-deleted admin, use `PATCH /api/v1/auth/admins/:id` with `{"activo": true}`.
+  Deleting an admin via this endpoint is a **soft delete** — it sets `activo = false` and increments `token_version` to immediately invalidate all active sessions. The admin record is **not removed** from the database. To reactivate a soft-deleted admin, use `PATCH /api/v1/auth/admins/:admin_id` with `{"activo": true}`.
 </Warning>
 
 ```bash
@@ -548,7 +548,7 @@ curl -X DELETE https://api.zippi.app/api/v1/auth/admins/12 \
 
 **Path parameters**
 
-<ParamField path="id" type="integer" required>
+<ParamField path="admin_id" type="integer" required>
   The numeric admin ID to deactivate.
 </ParamField>
 
@@ -569,7 +569,7 @@ curl -X DELETE https://api.zippi.app/api/v1/auth/admins/12 \
 }
 ```
 
-Returns the updated admin object with `activo: false` and an incremented `token_version`. A `admin_deactivated` audit event is recorded.
+Returns the updated admin object with `activo: false` and an incremented `token_version`. An `admin_deactivated` audit event is recorded.
 
 ---
 
@@ -590,4 +590,4 @@ Every admin response object (from list, create, get, update, and delete) is seri
 | `scope_id` | Scoped entity ID (`null` for global) |
 | `scope_label` | Human-readable scope label |
 
-Umbrella permissions are automatically expanded. For example, an admin with `catalog.manage` will also have all 18 fine-grained `catalog.*` action permissions (`catalog.create`, `catalog.edit_price`, etc.) included in their `permissions` array.
+Umbrella permissions are automatically expanded. For example, an admin with `catalog.manage` will also have all fine-grained `catalog.*` action permissions (`catalog.create`, `catalog.edit_price`, etc.) included in their `permissions` array.

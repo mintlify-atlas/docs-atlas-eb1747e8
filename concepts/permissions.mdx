@@ -1,7 +1,7 @@
 ---
-title: "Permission Model and RBAC in Zippi"
+title: "Permission Model, RBAC, and Action-Level Guards in Zippi"
 sidebarTitle: "Permissions"
-description: "Zippi uses action-level permissions beyond module access. catalog.manage implies fine-grained catalog actions; order transitions each require their own permission."
+description: "Zippi RBAC uses action-level permissions. catalog.manage expands to all catalog actions; each order-state transition requires its own explicit permission."
 ---
 
 Zippi's permission model goes beyond coarse module-level gates. For sensitive operations — editing a product price, closing a cashier shift, refunding an order — there are dedicated fine-grained action permissions that must be checked explicitly. The backend is the authority; the frontend only mirrors permissions for rendering decisions and must never be trusted as the sole gatekeeper.
@@ -273,7 +273,7 @@ This applies at every layer: unknown roles, missing permissions, missing scope �
 
 | Assumption | Reality |
 |-----------|---------|
-| `kitchen_staff` does not have `orders.manage` | **Wrong** — kitchen needs `orders.manage` to advance preparation |
+| `kitchen_staff` has `orders.manage` to advance preparation | **Wrong** — kitchen uses the fine-grained action permissions `orders.prepare` and `orders.pack` directly; the umbrella `orders.manage` is **not** in `OPERATIVE_ROLE_PERMISSIONS["kitchen_staff"]` |
 | `customer` has `orders.manage` to track their order | **Wrong** — customer has only `orders.read`; they cannot transition states |
 | `support_agent` can access cashier/payments | **Wrong** — support has no `cashier`, `payments`, or `liquidations` permissions |
 | `operations_admin` handles financial reconciliation | **Wrong** — operations has no `cashier`, `payments`, or `liquidations` permissions |

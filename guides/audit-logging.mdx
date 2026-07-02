@@ -133,12 +133,11 @@ Rules:
 
 ## Structured Logging Configuration
 
-Zippi uses Python's standard `logging` module, configured via `app/config/logging.py`. Set `STRUCTURED_LOGS=true` in your environment to switch to JSON output:
+Zippi uses Python's standard `logging` module, configured via `app/config/logging.py`. The log format (plain text vs JSON) is controlled by the application's logging initializer; the two variables that affect output behaviour from `.env` are:
 
 ```bash
-LOG_LEVEL=INFO          # DEBUG | INFO | WARNING | ERROR | CRITICAL
-LOG_FILE=storage/logs/zippi.log   # Optional file output path
-STRUCTURED_LOGS=true    # Emit JSON lines instead of plain text
+LOG_LEVEL=INFO                      # DEBUG | INFO | WARNING | ERROR | CRITICAL
+LOG_FILE=storage/logs/zippi.log     # Optional file output path (relative to backend/)
 ```
 
 **Plain text format** (default for local dev):

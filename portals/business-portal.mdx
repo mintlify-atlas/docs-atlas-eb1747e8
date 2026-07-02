@@ -1,7 +1,7 @@
 ---
 title: "Business Portal: Managing Your Brand and Operations"
 sidebarTitle: "Business Portal"
-description: "The Business Portal gives business_owner and business_admin roles a dashboard, catalog management, order tracking, branch administration, and settlement reports."
+description: "The Business Portal gives business_owner and business_admin roles a dashboard, catalog, order tracking, branch management, and settlement reports."
 ---
 
 The Business Portal is where brand owners and administrators run their day-to-day operations on Zippi. From a single interface, they manage the product catalog, track live orders, configure branches, review settlement statements, and monitor team activity — all scoped tightly to their own business group or brand.
@@ -80,6 +80,19 @@ Both roles share the same `business_portal` surface and the same `BUSINESS_MODUL
     `GET /api/v1/business/team`
     `POST /api/v1/business/team`
   </Card>
+  <Card title="Kitchen Queue" icon="fire-burner">
+    Live comanda queue for monitoring kitchen activity across in-scope branches. Business owners and admins use this for oversight; branch kitchen staff access the same data through the Branch Portal.
+
+    `GET /api/v1/business/kitchen/queue`
+  </Card>
+  <Card title="Waiter Floor" icon="utensils">
+    Live table and floor-status view for dine-in oversight. Shows table states (libre / ocupada / por cobrar) across all branches in scope.
+
+    `GET /api/v1/business/waiter/floor`
+  </Card>
+  <Card title="Cashier" icon="cash-register">
+    Cashier and payment visibility at the business level. Roles with `cashier.read` can monitor shift status, payment totals, and pending reconciliations across branches.
+  </Card>
   <Card title="Activity" icon="clock-rotate-left">
     Audit log of business-level actions: who changed what and when. Includes both viewed activity and operational event recording.
 
@@ -103,7 +116,7 @@ When a new business is being configured, the onboarding status endpoint tracks p
 GET /api/v1/business/onboarding/status
 ```
 
-This endpoint requires the `onboarding` portal permission and returns a structured status object indicating which setup steps are complete, in progress, or pending. City and country admins use this data during the onboarding approval flow.
+This endpoint returns a structured status object indicating which setup steps are complete, in progress, or pending. It is used during the business configuration and onboarding approval flow by city and country admins.
 
 ---
 
@@ -159,15 +172,7 @@ These endpoints are scoped to the calling user's business and branch context. `b
 
 ## Branch Requests and Approval
 
-New branches are submitted via `POST /api/v1/business/branches/request` and enter a pending state until a `city_admin` or `country_admin` approves or rejects them through the city operations panel:
-
-```http
-GET  /api/v1/city-ops/branch-requests
-POST /api/v1/city-ops/branch-requests/{branch_id}/approve
-POST /api/v1/city-ops/branch-requests/{branch_id}/reject
-```
-
-Once approved, the branch becomes `Operando` and appears in the marketplace for its city.
+New branches are submitted via `POST /api/v1/business/branches/request` and enter a pending state until a `city_admin` or `country_admin` approves or rejects them through the admin console. Once approved, the branch becomes `Operando` and appears in the marketplace for its city.
 
 <Tip>
 A `business_owner`'s scope covers the full `business_group`. If you need to restrict a user to a single brand, assign them `business_admin` with scope `business` instead.

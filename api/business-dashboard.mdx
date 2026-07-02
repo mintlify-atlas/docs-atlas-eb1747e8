@@ -1,7 +1,7 @@
 ---
-title: "Business Dashboard and Analytics API Reference"
+title: "Zippi Business Dashboard and Analytics API Reference"
 sidebarTitle: "Dashboard"
-description: "GET /api/v1/business/dashboard — Returns live operational metrics: active orders, revenue, branch status, and recent activity for the authenticated business scope."
+description: "Real-time operational metrics, sales analytics, activity log, and notifications for business portal users. Scoped to the JWT-resolved business context."
 ---
 
 The Business Dashboard endpoints give authenticated business users a live view of their operational health, sales analytics, recent activity, and pending notifications — all scoped to their JWT-resolved business context. Every request passes through the `require_business_portal` guard, which reads the JWT, resolves the business scope, and injects that scope into the downstream service layer before any handler logic runs.

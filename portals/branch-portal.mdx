@@ -14,9 +14,9 @@ Every role in the Branch Portal has scope `business_branch`, meaning they see on
 
 | Role | Screen | Scope | Home Route |
 |------|--------|-------|------------|
-| `kitchen_staff` | Comanda queue | `business_branch` | `/app/business/branch` |
-| `cashier` | Shift and cash register | `business_branch` | `/app/business/branch` |
-| `waiter` | Table map and comanda | `business_branch` | `/app/business/branch` |
+| `kitchen_staff` | Comanda queue | `business_branch` | `/app/business/kitchen` |
+| `cashier` | Shift and cash register | `business_branch` | `/app/business/cashier` |
+| `waiter` | Table map and comanda | `business_branch` | `/app/business/waiter` |
 | `business_branch_admin` | Full branch overview | `business_branch` | `/app/business/branch` |
 
 ---
@@ -74,7 +74,7 @@ Every role in the Branch Portal has scope `business_branch`, meaning they see on
 
     ### Shift Lifecycle
 
-    ```
+    ```text
     Cashier opens shift (cashier.open)
       → Records payments during the shift (orders.collect_payment)
       → Reconciles pending Nequi / transfer / efectivo (cashier.reconcile)
@@ -84,7 +84,7 @@ Every role in the Branch Portal has scope `business_branch`, meaning they see on
 
     ### Cash Register View
 
-    ```
+    ```text
     Caja: ABIERTA  (turno 14:00)
     Esperado: $480.000   Recibido: $475.000   Diferencia: -$5.000
     Pendientes: Nequi (2)  Transferencia (1)  Efectivo (3)
@@ -98,7 +98,7 @@ Every role in the Branch Portal has scope `business_branch`, meaning they see on
     ```http
     GET  /api/v1/cashier/overview
     GET  /api/v1/cashier/shifts
-    POST /api/v1/cashier/shifts                         # Open shift (cashier.reconcile)
+    POST /api/v1/cashier/shifts                         # Open shift (cashier.open)
     GET  /api/v1/cashier/shifts/{shift_id}
     POST /api/v1/cashier/shifts/{shift_id}/base         # Register initial base
     GET  /api/v1/cashier/shifts/{shift_id}/movements
