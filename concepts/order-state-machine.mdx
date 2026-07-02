@@ -1,0 +1,194 @@
+---
+title: "Order State Machine: States and Transitions"
+sidebarTitle: "Order States"
+description: "Zippi orders follow a 13-state FSM. Each transition validates origin state, executing role, and scope. Exception states handle edge cases."
+---
+
+The order is the operational heart of Zippi. Its lifecycle is modeled as an explicit finite state machine: every transition has a defined origin state, a set of roles authorized to execute it, and a scope check confirming the resource belongs to the actor. Any transition not in the allowed list is rejected with a `409 Conflict`. Every transition that does occur is audited atomically in the same database transaction.
+
+## Happy Path: 13 States
+
+The happy path is the successful delivery flow from order creation to closure.
+
+```
+Nuevo
+  → Pendiente aceptación
+  → Aceptado
+  → Esperando preparación
+  → Preparando
+  → Empacado
+  → Esperando domiciliario
+  → Domiciliario asignado
+  → Recogido
+  → En camino
+  → Llegó
+  → Entregado
+  → Cerrado
+```
+
+| # | State | Meaning |
+|---|-------|---------|
+| 1 | **Nuevo** | Order just created via app or WhatsApp bot |
+| 2 | **Pendiente aceptación** | Awaiting acceptance by the business |
+| 3 | **Aceptado** | Business confirmed the order |
+| 4 | **Esperando preparación** | Order queued for kitchen preparation |
+| 5 | **Preparando** | Kitchen is actively preparing the order |
+| 6 | **Empacado** | Order packed and ready for pickup |
+| 7 | **Esperando domiciliario** | Awaiting courier assignment |
+| 8 | **Domiciliario asignado** | Courier assigned; waiting for pickup |
+| 9 | **Recogido** | Courier has picked up the order |
+| 10 | **En camino** | Courier is en route to the customer |
+| 11 | **Llegó** | Courier arrived at the delivery address |
+| 12 | **Entregado** | Order delivered to the customer |
+| 13 | **Cerrado** | Order closed by the system or business |
+
+## Exception States
+
+Exception states handle everything that can go wrong. Some are terminal (no further transitions to operational states); some allow re-entry into the flow via **Reprogramado**.
+
+| State | Meaning | Reachable from |
+|-------|---------|----------------|
+| **Cancelado** | Cancelled before delivery | Almost any state prior to Entregado |
+| **Devuelto** | Customer returned the order | Entregado |
+| **Fallido** | Delivery could not be completed | En camino, Llegó |
+| **Cliente ausente** | Customer not present at address | Llegó |
+| **No localizado** | Address or customer not found | En camino |
+| **Reprogramado** | Delivery rescheduled for retry | Cliente ausente, No localizado |
+| **Reembolsado** | Payment refunded | Entregado, Cancelado |
+
+**Terminal states** (no further operational transitions): `Cerrado`, `Reembolsado`, `Devuelto`, `Fallido`.
+
+## Complete Transition Table
+
+This table is the implementation source of truth. Any transition not listed here must be rejected with `409 Conflict`.
+
+| From state | To state | Authorized role(s) | Permission |
+|-----------|----------|-------------------|------------|
+| Nuevo | Pendiente aceptación | sistema / canal de entrada | — |
+| Nuevo | Cancelado | negocio, soporte, city/ops | `orders.cancel` |
+| Pendiente aceptación | Aceptado | `business_admin`, `business_branch_admin`, `business_owner` | `orders.accept` |
+| Pendiente aceptación | Cancelado | negocio, soporte, city/ops | `orders.cancel` |
+| Aceptado | Esperando preparación | sistema / negocio | — |
+| Esperando preparación | Preparando | `kitchen_staff` | `orders.prepare` |
+| Preparando | Empacado | `kitchen_staff` | `orders.pack` |
+| Preparando | Cancelado | negocio, soporte, city/ops | `orders.cancel` |
+| Empacado | Esperando domiciliario | sistema / negocio | — |
+| Esperando domiciliario | Domiciliario asignado | `operations_admin`, `city_admin`, dispatch | `orders.assign_courier` |
+| Domiciliario asignado | Recogido | `delivery_driver` | `orders.pickup` |
+| Recogido | En camino | `delivery_driver` | `orders.transit` |
+| En camino | Llegó | `delivery_driver` | `orders.transit` |
+| En camino | Fallido | `delivery_driver`, soporte | `orders.mark_failed` |
+| En camino | No localizado | `delivery_driver` | `orders.mark_failed` |
+| Llegó | Entregado | `delivery_driver` | `orders.deliver` |
+| Llegó | Fallido | `delivery_driver`, soporte | `orders.mark_failed` |
+| Llegó | Cliente ausente | `delivery_driver` | `orders.mark_absent` |
+| Cliente ausente | Reprogramado | soporte, `operations_admin` | `orders.reschedule` |
+| No localizado | Reprogramado | soporte, `operations_admin` | `orders.reschedule` |
+| Entregado | Cerrado | sistema / negocio | `orders.close` |
+| Entregado | Devuelto | soporte, `operations_admin` | `orders.return` |
+| Entregado | Reembolsado | `finance_admin`, `cashier`, `business_owner` (with payment permission) | `orders.refund` |
+| Cancelado | Reembolsado | `finance_admin`, `cashier`, `business_owner` (with payment permission) | `orders.refund` |
+| (most states before Entregado) | Cancelado | negocio, soporte, city/ops | `orders.cancel` |
+
+## State Machine Rules
+
+The following rules apply to every transition without exception:
+
+1. **Origin state validation** — the order must be in the expected `from_state`. Transitions to an already-occupied state or from a terminal state are always rejected.
+
+2. **Role authorization** — the authenticated user's role must appear in the `authorized_roles` for that `(from_state, to_state)` pair.
+
+3. **Scope membership** — the order must belong to the user's scope (`business_id`, `branch_id`, or `user_id` for drivers). A valid order ID in another tenant's data returns `404`, not `403`.
+
+4. **Atomic audit** — the state change and its audit record (actor, timestamp, previous state, new state, reason) are written in the same database transaction. No transition occurs without an audit trail.
+
+5. **Idempotency** — retrying an already-applied transition is a no-op, not a duplicate error.
+
+6. **Concurrency** — if two actors attempt to transition the same order simultaneously, optimistic concurrency control ensures the second actor receives a `409` if the state has already changed.
+
+<Note>
+  Every single state transition is audited — including automatic system transitions triggered by timeouts or webhooks. For system-driven transitions, the audit actor is set to `"sistema"`. There are no silent state changes.
+</Note>
+
+## Reference Implementation
+
+The state machine is implemented as two dictionaries: a whitelist of valid `(origin, destination)` pairs, and a mapping of those pairs to the set of authorized roles.
+
+```python
+VALID_TRANSITIONS: dict[EstadoPedido, set[EstadoPedido]] = {
+    EstadoPedido.NUEVO: {EstadoPedido.PENDIENTE_ACEPTACION, EstadoPedido.CANCELADO},
+    EstadoPedido.PENDIENTE_ACEPTACION: {EstadoPedido.ACEPTADO, EstadoPedido.CANCELADO},
+    EstadoPedido.PREPARANDO: {EstadoPedido.EMPACADO, EstadoPedido.CANCELADO},
+    EstadoPedido.LLEGO: {EstadoPedido.ENTREGADO, EstadoPedido.CLIENTE_AUSENTE},
+    EstadoPedido.ENTREGADO: {
+        EstadoPedido.CERRADO,
+        EstadoPedido.DEVUELTO,
+        EstadoPedido.REEMBOLSADO,
+    },
+    # ... all transitions
+}
+
+ROLE_TRANSITIONS: dict[tuple[EstadoPedido, EstadoPedido], set[str]] = {
+    (EstadoPedido.PREPARANDO, EstadoPedido.EMPACADO): {
+        "kitchen_staff", "business_branch_admin", "business_admin", "business_owner"
+    },
+    (EstadoPedido.LLEGO, EstadoPedido.ENTREGADO): {"delivery_driver"},
+    # ...
+}
+
+def transition(order, destino: EstadoPedido, scope):
+    if destino not in VALID_TRANSITIONS.get(order.estado, set()):
+        raise ConflictError(f"Transición inválida: {order.estado} → {destino}")
+    allowed = ROLE_TRANSITIONS.get((order.estado, destino), set())
+    if scope.role not in allowed:
+        raise PermissionDeniedError("Tu rol no puede ejecutar esta transición")
+    if not scope.owns(order):           # scope membership check
+        raise PermissionDeniedError("Pedido fuera de tu alcance")
+    # state change + audit in the same Unit of Work
+```
+
+<Warning>
+  Prohibited transition examples: `Nuevo → Entregado`, `Preparando → Entregado`, `Cerrado → any operational state`, `Entregado → Preparando`. The state machine uses a **whitelist** — everything not explicitly listed is rejected with `409`. Never implement a fallthrough or default "allow" path.
+</Warning>
+
+## State Diagram
+
+```
+Nuevo ─── Pendiente ─── Aceptado ─── Esperando prep ─── Preparando ─── Empacado
+                                                                            │
+                    Esperando domi ─── Domi asignado ─── Recogido ──────────┘
+                           │
+                       En camino ──────── Llegó ──────── Entregado ──── Cerrado
+                           │                 │                │
+                    No localizado      Cliente ausente    Devuelto / Reembolsado
+                           │                 │
+                       Reprogramado ─────────┘
+
+(Cancelado: reachable from most states before Entregado)
+(Fallido: reachable from En camino and Llegó)
+```
+
+## SLA and Timeout Behavior
+
+Some states have operational time expectations that the system monitors:
+
+| State | SLA concern | System behavior on breach |
+|-------|------------|--------------------------|
+| Pendiente aceptación | Business not accepting | Alert sent to ops; auto-cancel if configured |
+| Preparando | Kitchen exceeding timer | Alert on kitchen screen |
+| Esperando domiciliario | No assignment after X minutes | Escalation to dispatch |
+| En camino → Entregado | Logistics SLA | Tracking alert opened |
+
+Timeouts trigger **events and alerts** — they do not silently change order state. Any automatic state change caused by a timeout is a valid transition that must be audited with `actor = "sistema"` and a reason code.
+
+## Required Test Cases
+
+```text
+- Happy path transition by the correct role → 200, state changed, audited
+- Prohibited transition (Nuevo → Entregado) → 409
+- Transition by unauthorized role (customer attempts advance) → 403
+- Transition on order belonging to another tenant → 403 / 404
+- Retry of already-applied transition → idempotent (no duplicate effect)
+- Refund amount exceeding order total → 422
+- Concurrent actors on same order → second actor receives 409
+```

@@ -1,0 +1,270 @@
+---
+title: "Business Orders API: View and Manage Incoming Orders"
+sidebarTitle: "Business Orders"
+description: "List, retrieve, and update incoming orders via the Business Portal. Order state transitions are validated against role permissions and the FSM."
+---
+
+The Business Orders endpoints allow authenticated business roles to view, filter, and act on incoming orders. Every status transition is validated against both the caller's permissions (e.g. `orders.accept`, `orders.reject`) and the order FSM before the change is persisted. Each transition is atomically written to `historial_estados_pedido` with a `correlation_id` for full traceability.
+
+## Order states and business-side FSM transitions
+
+| Transition | Permission required | Roles that hold it |
+|---|---|---|
+| `pending` → `accepted` | `orders.accept` | `business_owner`, `business_admin`, `business_branch_admin`, `waiter` |
+| `pending` → `rejected` | `orders.reject` | `business_owner`, `business_admin`, `business_branch_admin`, `waiter` |
+| `accepted` → `preparing` | `orders.prepare` | `business_owner`, `business_admin`, `business_branch_admin`, `kitchen_staff` |
+| `preparing` → `packed` | `orders.pack` | `business_owner`, `business_admin`, `business_branch_admin`, `kitchen_staff` |
+
+Downstream transitions (courier pickup, in-transit, delivered, closed) are handled by dispatch and courier-side endpoints and are not exposed through the Business Portal.
+
+<Note>
+  Every status transition writes an immutable row to `historial_estados_pedido`. The row stores `estado_anterior`, `estado_nuevo`, `actor_tipo`, `actor_id`, `observacion`, `correlation_id`, and `trace_id`. This audit trail cannot be modified or deleted via any API endpoint.
+</Note>
+
+---
+
+## GET /api/v1/business/orders
+
+Returns a paginated list of orders for the authenticated business scope. Supports filtering by status, branch, and date range.
+
+```bash
+curl -X GET "https://api.zippi.app/api/v1/business/orders?status=pending&page=1&page_size=20" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Query parameters**
+
+<ParamField query="status" type="string">
+  Filter by order status. Accepted values: `pending`, `accepted`, `preparing`, `packed`, `picked_up`, `in_transit`, `delivered`, `closed`, `cancelled`, `failed`.
+</ParamField>
+
+<ParamField query="page" type="integer" default="1">
+  Page number, 1-indexed.
+</ParamField>
+
+<ParamField query="page_size" type="integer" default="20">
+  Records per page. Recommended maximum: 100.
+</ParamField>
+
+<ParamField query="branch_id" type="string">
+  Filter orders for a specific branch. Required when the caller is a `business_branch_admin` (scope is enforced automatically).
+</ParamField>
+
+<ParamField query="from_date" type="string">
+  ISO 8601 date string (e.g. `2024-06-01`). Returns orders created on or after this date.
+</ParamField>
+
+<ParamField query="to_date" type="string">
+  ISO 8601 date string (e.g. `2024-06-30`). Returns orders created on or before this date.
+</ParamField>
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id_pedido": 1001,
+        "codigo_pedido": "ZP-20240601-001",
+        "estado_actual": "pending",
+        "metodo_pago": "cash",
+        "valor_compra_estimado": 2200000,
+        "valor_servicio": 350000,
+        "fecha_creacion": "2024-06-01T18:45:00Z"
+      }
+    ],
+    "total": 47,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
+
+---
+
+## GET /api/v1/business/orders/:id
+
+Returns the full detail of a single order, including line items, status history, courier assignment, and incidents.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/orders/1001 \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response fields**
+
+<ResponseField name="id_pedido" type="integer">
+  Internal primary key of the order.
+</ResponseField>
+
+<ResponseField name="codigo_pedido" type="string">
+  Human-readable order reference code, unique across the platform.
+</ResponseField>
+
+<ResponseField name="estado_actual" type="string">
+  Current FSM state of the order.
+</ResponseField>
+
+<ResponseField name="metodo_pago" type="string">
+  Payment method: `cash`, `nequi`, `wompi`, `transfer`.
+</ResponseField>
+
+<ResponseField name="valor_servicio" type="integer">
+  Delivery fee in centavos.
+</ResponseField>
+
+<ResponseField name="valor_compra_estimado" type="integer | null">
+  Estimated product subtotal in centavos at order creation time.
+</ResponseField>
+
+<ResponseField name="valor_compra_real" type="integer | null">
+  Confirmed product subtotal in centavos, set when the business confirms the order.
+</ResponseField>
+
+<ResponseField name="valor_total_final" type="integer | null">
+  Final charged amount in centavos including service fee and adjustments.
+</ResponseField>
+
+<ResponseField name="items" type="array">
+  <Expandable title="Order line items">
+    <ResponseField name="id_item" type="integer">
+      Line item identifier.
+    </ResponseField>
+    <ResponseField name="nombre_item" type="string">
+      Product name as it was at order time (snapshot, not a live reference).
+    </ResponseField>
+    <ResponseField name="cantidad" type="integer">
+      Quantity ordered.
+    </ResponseField>
+    <ResponseField name="precio_unitario_estimado" type="integer | null">
+      Unit price in centavos at order time.
+    </ResponseField>
+    <ResponseField name="subtotal_estimado" type="integer | null">
+      `cantidad × precio_unitario_estimado` in centavos.
+    </ResponseField>
+    <ResponseField name="observaciones" type="string | null">
+      Customer-provided notes for the item.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="historial_estados" type="array">
+  Ordered list of all FSM state transitions for audit purposes.
+</ResponseField>
+
+---
+
+## PATCH /api/v1/business/orders/:id/status
+
+Advances the order through the FSM to a new state. The service layer validates the transition against the FSM rules and the caller's permissions before persisting.
+
+```bash
+curl -X PATCH https://api.zippi.app/api/v1/business/orders/1001/status \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"new_status": "accepted"}'
+```
+
+```bash
+# Rejecting an order with a required reason
+curl -X PATCH https://api.zippi.app/api/v1/business/orders/1001/status \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"new_status": "rejected", "reason": "Producto agotado"}'
+```
+
+<ParamField body="new_status" type="string" required>
+  Target FSM state. Must be a valid transition from the order's `estado_actual`. Accepted business-side values: `accepted`, `rejected`, `preparing`, `packed`.
+</ParamField>
+
+<ParamField body="reason" type="string">
+  Optional human-readable justification for the transition. Required when `new_status` is `rejected` or `cancelled`. Stored in `historial_estados_pedido.observacion`.
+</ParamField>
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id_pedido": 1001,
+    "estado_anterior": "pending",
+    "estado_nuevo": "accepted",
+    "correlation_id": "corr_a1b2c3d4"
+  }
+}
+```
+
+<Note>
+  The `correlation_id` returned in the response is the same value written to `historial_estados_pedido`. Use it to cross-reference log lines, trace distributed events, and correlate audit entries across services.
+</Note>
+
+---
+
+## POST /api/v1/business/orders/:id/incident
+
+Reports an operational incident on a specific order (e.g. missing item, wrong product, customer not present). Returns `201 Created`. Stored in `incidencias_pedido`.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/business/orders/1001/incident \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tipo_incidencia": "producto_faltante",
+    "descripcion": "El cliente reportó que faltó una Coca-Cola en el pedido"
+  }'
+```
+
+<ParamField body="tipo_incidencia" type="string" required>
+  Incident category. Common values: `producto_faltante`, `producto_incorrecto`, `cliente_ausente`, `pedido_dañado`, `otro`.
+</ParamField>
+
+<ParamField body="descripcion" type="string" required>
+  Full description of the incident. Stored verbatim for support and dispute resolution.
+</ParamField>
+
+**Response `201 Created`**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id_incidencia": 55,
+    "tipo_incidencia": "producto_faltante",
+    "estado_incidencia": "abierta",
+    "fecha_creacion": "2024-06-01T19:02:00Z"
+  }
+}
+```
+
+---
+
+## GET /api/v1/business/kitchen/queue
+
+Returns the active kitchen comanda queue for the authenticated branch scope, ordered by creation time. Designed for the kitchen display screen.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/kitchen/queue \
+  -H "Authorization: Bearer <token>"
+```
+
+**Required role:** `kitchen_staff`, `business_owner`, `business_admin`, or `business_branch_admin` (module: `orders`).
+
+The response surfaces orders in `accepted` or `preparing` states with their line items expanded, so the kitchen screen can display preparation instructions without additional round-trips.
+
+---
+
+## GET /api/v1/business/waiter/floor
+
+Returns the floor map view for the waiter surface: tables with their active orders, seat counts, and pending items that need attention.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/waiter/floor \
+  -H "Authorization: Bearer <token>"
+```
+
+**Required role:** `waiter`, `business_owner`, `business_admin`, or `business_branch_admin` (module: `orders`).
+
+The waiter floor view aggregates orders by table and surfaces pending-acceptance and in-progress items so the front-of-house team can triage service without leaving the floor map.

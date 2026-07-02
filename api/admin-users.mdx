@@ -1,0 +1,593 @@
+---
+title: "Admin Users API: Create and Manage Platform Administrators"
+sidebarTitle: "Admin Users"
+description: "CRUD endpoints for Zippi admin accounts. Requires admins.read or admins.manage permissions. Each admin is assigned a role, scope type, and scope ID."
+---
+
+Admin users are the humans who operate the Zippi platform — from super administrators with global access to branch-level cashiers scoped to a single business location. Every admin account is bound to a **role**, a **scope type**, and (for non-global scopes) a **scope ID** that together determine what data and actions the account can access. All endpoints in this section are mounted under `POST /api/v1/auth/` and protected by the `admins.read` or `admins.manage` permission.
+
+## Role reference
+
+Zippi defines **16 platform roles**. The `role` field must be one of these exact keys when creating or updating an admin.
+
+| Role key | Label | Default scope |
+|---|---|---|
+| `super_admin` | Super administrador | `global` |
+| `platform_admin` | Administrador plataforma | `global` |
+| `country_admin` | Administrador pais | `country` |
+| `city_admin` | Administrador ciudad | `city` |
+| `zippi_branch_admin` | Administrador sucursal Zippi | `zippi_branch` |
+| `operations_admin` | Administrador operaciones | `city` |
+| `finance_admin` | Administrador financiero | `city` |
+| `support_agent` | Agente soporte | `city` |
+| `business_owner` | Dueño de negocio | `business_group` |
+| `business_admin` | Administrador negocio | `business` |
+| `business_branch_admin` | Administrador sucursal negocio | `business_branch` |
+| `kitchen_staff` | Cocina | `business_branch` |
+| `cashier` | Cajero | `business_branch` |
+| `waiter` | Mesero | `business_branch` |
+| `delivery_driver` | Domiciliario | `self` |
+| `customer` | Cliente | `self` |
+
+Each role has a fixed `default_scope_type`. The `scope_type` supplied in a create/update request must match the role's default scope type; mismatches are rejected with `422`.
+
+---
+
+## GET /api/v1/auth/admins
+
+Requires `admins.read` permission. Returns a paginated, filterable list of admin accounts ordered by active status (active first), then name ascending.
+
+```bash
+curl "https://api.zippi.app/api/v1/auth/admins?page=1&page_size=25&active_only=true&role=city_admin" \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Query parameters**
+
+<ParamField query="page" type="integer" default="1">
+  Page number (1-based).
+</ParamField>
+
+<ParamField query="page_size" type="integer" default="25">
+  Records per page. Clamped to a maximum of `100`.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Full-text search across admin name, email, and scope label.
+</ParamField>
+
+<ParamField query="active_only" type="boolean">
+  When `true` (or `1`/`yes`/`si`), returns only active admins. When `false`, returns only inactive. Omit to return all.
+</ParamField>
+
+<ParamField query="role" type="string">
+  Filter by exact role key (e.g., `city_admin`, `business_admin`).
+</ParamField>
+
+<ParamField query="scope_type" type="string">
+  Filter by scope type key (e.g., `city`, `business`). Using `global` also matches records where `scope_tipo` is `NULL`.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id_admin": 1,
+        "nombre": "Ana García",
+        "email": "ana@zippi.app",
+        "rol": "city_admin",
+        "role_label": "Administrador ciudad",
+        "role_description": "Gestiona la operacion, negocios, domiciliarios, soporte y finanzas de una ciudad.",
+        "surface": "admin_panel",
+        "home_route": "/app/admin/city",
+        "permissions": ["dashboard.read", "orders.read"],
+        "modules": ["dashboard", "orders"],
+        "scope_type": "city",
+        "scope_id": 3,
+        "scope_label": "Bogotá",
+        "token_version": 1,
+        "activo": true,
+        "fecha_creacion": "2024-01-10T09:00:00",
+        "ultimo_acceso": "2024-11-15T12:00:00"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "page_size": 25,
+      "total": 48
+    }
+  }
+}
+```
+
+<ResponseField name="items" type="array">
+  List of serialized admin objects. Each entry includes the full access profile from `build_access_profile()`.
+</ResponseField>
+
+<ResponseField name="pagination.page" type="integer">
+  Current page number.
+</ResponseField>
+
+<ResponseField name="pagination.page_size" type="integer">
+  Records per page as applied.
+</ResponseField>
+
+<ResponseField name="pagination.total" type="integer">
+  Total matching records across all pages.
+</ResponseField>
+
+---
+
+## POST /api/v1/auth/admins
+
+Requires `admins.manage` permission. Creates a new admin account. Returns `409 Conflict` if an admin with the same email already exists.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/auth/admins \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Luis Torres",
+    "email": "luis@zippi.app",
+    "password": "s3curePass!",
+    "role": "city_admin",
+    "scope_type": "city",
+    "scope_id": 3,
+    "scope_label": "Bogotá"
+  }'
+```
+
+**Request body**
+
+<ParamField body="name" type="string" required>
+  Admin's full name. Maximum 120 characters.
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Admin's unique email address. Normalized to lowercase. Maximum 160 characters.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Initial password. Minimum 6 characters, maximum 120 characters. Stored as a `pbkdf2:sha256` hash.
+</ParamField>
+
+<ParamField body="role" type="string" required>
+  One of the 16 role keys listed in the [Role reference](#role-reference) table above. Must be a valid console role.
+</ParamField>
+
+<ParamField body="scope_type" type="string">
+  Scope type key. Must match the role's `default_scope_type`. Omit to use the role default.
+
+  Accepted values: `global` · `country` · `city` · `zippi_branch` · `business_group` · `business` · `business_branch` · `self`
+</ParamField>
+
+<ParamField body="scope_id" type="integer">
+  Database ID of the scoped entity. Required for all non-global scope types. Must be a positive integer. For `business` and `business_branch` scopes, the referenced entity must exist and be active.
+</ParamField>
+
+<ParamField body="scope_label" type="string">
+  Human-readable label for the scope (e.g., `"Bogotá"`, `"Pizza Palace - Chapinero"`). Required for non-`business`/non-`global` scopes if no entity name can be resolved automatically. Maximum 160 characters.
+</ParamField>
+
+**Response** `201 Created`
+
+Returns the same admin object shape as the list endpoint, including the resolved `build_access_profile()` fields.
+
+```json
+{
+  "success": true,
+  "data": {
+    "id_admin": 12,
+    "nombre": "Luis Torres",
+    "email": "luis@zippi.app",
+    "rol": "city_admin",
+    "role_label": "Administrador ciudad",
+    "surface": "admin_panel",
+    "home_route": "/app/admin/city",
+    "permissions": ["dashboard.read", "orders.read", "orders.manage"],
+    "modules": ["dashboard", "orders", "clients"],
+    "scope_type": "city",
+    "scope_id": 3,
+    "scope_label": "Bogotá",
+    "token_version": 1,
+    "activo": true,
+    "fecha_creacion": "2024-11-15T13:00:00",
+    "ultimo_acceso": null
+  }
+}
+```
+
+---
+
+## GET /api/v1/auth/admins/:id
+
+Requires `admins.read` permission. Returns the serialized admin object for the given admin ID.
+
+```bash
+curl https://api.zippi.app/api/v1/auth/admins/12 \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Path parameters**
+
+<ParamField path="id" type="integer" required>
+  The numeric admin ID (`id_admin`).
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "id_admin": 12,
+    "nombre": "Luis Torres",
+    "email": "luis@zippi.app",
+    "rol": "city_admin",
+    "role_label": "Administrador ciudad",
+    "role_description": "Gestiona la operacion, negocios, domiciliarios, soporte y finanzas de una ciudad.",
+    "surface": "admin_panel",
+    "home_route": "/app/admin/city",
+    "permissions": ["dashboard.read", "orders.read", "orders.manage"],
+    "modules": ["dashboard", "orders", "clients"],
+    "scope_type": "city",
+    "scope_id": 3,
+    "scope_label": "Bogotá",
+    "token_version": 1,
+    "activo": true,
+    "fecha_creacion": "2024-11-15T13:00:00",
+    "ultimo_acceso": "2024-11-15T14:30:00"
+  }
+}
+```
+
+Returns `404 Not Found` if the admin does not exist.
+
+---
+
+## GET /api/v1/auth/admins/:id/detail
+
+Requires `admins.read` permission. Returns the admin record plus an enriched `access` breakdown (modules with routes and labels, permissions with descriptions) and a top-level `event_summary`.
+
+```bash
+curl https://api.zippi.app/api/v1/auth/admins/12/detail \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Path parameters**
+
+<ParamField path="id" type="integer" required>
+  The numeric admin ID.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "admin": { "...": "same shape as GET /admins/:id" },
+    "access": {
+      "surface": "admin_panel",
+      "home_route": "/app/admin/city",
+      "modules": [
+        { "key": "dashboard", "label": "Panel", "route": "/" },
+        { "key": "orders", "label": "Pedidos", "route": "/orders" }
+      ],
+      "permissions": [
+        { "key": "orders.read", "description": "Consultar pedidos y detalle operativo" },
+        { "key": "orders.manage", "description": "Crear, editar, cancelar o ajustar pedidos" }
+      ],
+      "permissions_count": 24,
+      "modules_count": 10
+    },
+    "event_summary": {
+      "total_events": 34,
+      "login_count": 20,
+      "exports_count": 2,
+      "revoked_sessions": 1,
+      "managed_accesses": 5,
+      "changes_received": 3,
+      "last_event_at": "2024-11-15T14:30:00"
+    }
+  }
+}
+```
+
+<ResponseField name="admin" type="object">
+  Full admin record (same as the single-admin GET endpoint).
+</ResponseField>
+
+<ResponseField name="access" type="object">
+  <Expandable title="Access detail fields">
+    <ResponseField name="surface" type="string">
+      UI surface for this role.
+    </ResponseField>
+    <ResponseField name="home_route" type="string">
+      Post-login redirect route.
+    </ResponseField>
+    <ResponseField name="modules" type="array">
+      Module objects with `key`, `label`, and `route`.
+    </ResponseField>
+    <ResponseField name="permissions" type="array">
+      Permission objects with `key` and `description`.
+    </ResponseField>
+    <ResponseField name="permissions_count" type="integer">
+      Total number of permissions granted to this admin.
+    </ResponseField>
+    <ResponseField name="modules_count" type="integer">
+      Total number of modules accessible to this admin.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="event_summary" type="object">
+  <Expandable title="Event summary fields">
+    <ResponseField name="total_events" type="integer">
+      Total audit events where this admin is actor or target.
+    </ResponseField>
+    <ResponseField name="login_count" type="integer">
+      Number of successful login events.
+    </ResponseField>
+    <ResponseField name="exports_count" type="integer">
+      Number of report or audit export events.
+    </ResponseField>
+    <ResponseField name="revoked_sessions" type="integer">
+      Number of session revocation events.
+    </ResponseField>
+    <ResponseField name="managed_accesses" type="integer">
+      Number of admin management actions performed by this admin.
+    </ResponseField>
+    <ResponseField name="changes_received" type="integer">
+      Number of changes applied to this admin by others.
+    </ResponseField>
+    <ResponseField name="last_event_at" type="string | null">
+      ISO 8601 timestamp of the most recent audit event.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GET /api/v1/auth/admins/:id/events
+
+Requires `admins.read` permission. Returns the paginated activity log for a specific admin — events where this admin was either the actor or the target. Results are ordered by `fecha_evento` descending.
+
+```bash
+curl "https://api.zippi.app/api/v1/auth/admins/12/events?page=1&page_size=20" \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Path parameters**
+
+<ParamField path="id" type="integer" required>
+  The numeric admin ID.
+</ParamField>
+
+**Query parameters**
+
+<ParamField query="page" type="integer" default="1">
+  Page number (1-based).
+</ParamField>
+
+<ParamField query="page_size" type="integer" default="20">
+  Items per page. Clamped to a maximum of `100`.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id_evento": 88,
+        "tipo_evento": "admin_updated",
+        "descripcion": "Se actualizaron datos del acceso Luis Torres",
+        "actor": {
+          "id_admin": 1,
+          "tipo": "database",
+          "nombre": "Ana García",
+          "email": "ana@zippi.app"
+        },
+        "objetivo": {
+          "id_admin": 12,
+          "nombre": "Luis Torres",
+          "email": "luis@zippi.app"
+        },
+        "payload": {
+          "changed_fields": ["scope_label"],
+          "before": { "scope_label": "Bogotá Norte" },
+          "after": { "scope_label": "Bogotá" }
+        },
+        "fecha_evento": "2024-11-15T14:00:00"
+      }
+    ],
+    "pagination": { "page": 1, "page_size": 20, "total": 34 },
+    "summary": {
+      "total_events": 34,
+      "login_count": 20,
+      "exports_count": 2,
+      "revoked_sessions": 1,
+      "managed_accesses": 5,
+      "changes_received": 3,
+      "last_event_at": "2024-11-15T14:30:00"
+    }
+  }
+}
+```
+
+---
+
+## POST /api/v1/auth/admins/:id/revoke-sessions
+
+Requires `admins.manage` permission. Increments the target admin's `token_version`, immediately invalidating all their active JWT sessions. Any currently-active access token for that admin will be rejected on the next token validation call. A `sessions_revoked` audit event is recorded.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/auth/admins/12/revoke-sessions \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Path parameters**
+
+<ParamField path="id" type="integer" required>
+  The numeric admin ID whose sessions should be revoked.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "admin": { "...": "updated admin object with incremented token_version" },
+    "revoked_at": "2024-11-15T15:00:00",
+    "self_revoked": false
+  }
+}
+```
+
+<ResponseField name="admin" type="object">
+  The updated admin record. The `token_version` will be incremented by 1.
+</ResponseField>
+
+<ResponseField name="revoked_at" type="string">
+  ISO 8601 UTC timestamp of the revocation.
+</ResponseField>
+
+<ResponseField name="self_revoked" type="boolean">
+  `true` if the requesting admin revoked their own sessions.
+</ResponseField>
+
+---
+
+## PATCH /api/v1/auth/admins/:id
+
+Requires `admins.manage` permission. Partially updates an admin account. At least one valid field must be present in the request body. If `password` is changed, the admin's `token_version` is incremented and all active sessions are revoked automatically.
+
+<Note>
+  An admin cannot use this endpoint to deactivate their own account, change their own role, or modify their own scope. Attempting to do so returns `409 Conflict`. These self-protection rules apply only when the authenticated viewer is the same admin being edited.
+</Note>
+
+```bash
+curl -X PATCH https://api.zippi.app/api/v1/auth/admins/12 \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "role": "operations_admin",
+    "scope_type": "city",
+    "scope_id": 5,
+    "scope_label": "Medellín",
+    "activo": true
+  }'
+```
+
+**Path parameters**
+
+<ParamField path="id" type="integer" required>
+  The numeric admin ID to update.
+</ParamField>
+
+**Request body** — all fields are optional; at least one must be present
+
+<ParamField body="name" type="string">
+  Updated display name. Maximum 120 characters.
+</ParamField>
+
+<ParamField body="email" type="string">
+  Updated email address. Must be unique. Returns `409` if another admin already holds this email.
+</ParamField>
+
+<ParamField body="password" type="string">
+  New password. Minimum 6 characters. Triggers automatic session revocation and `token_version` increment.
+</ParamField>
+
+<ParamField body="role" type="string">
+  New role key from the [Role reference](#role-reference) table.
+</ParamField>
+
+<ParamField body="scope_type" type="string">
+  New scope type. Must match the new role's `default_scope_type`.
+</ParamField>
+
+<ParamField body="scope_id" type="integer">
+  New scope entity ID. Required when the new scope type is non-global.
+</ParamField>
+
+<ParamField body="scope_label" type="string">
+  New scope label. Maximum 160 characters.
+</ParamField>
+
+<ParamField body="activo" type="boolean">
+  Set to `false` to deactivate (cannot deactivate your own account). Set to `true` to reactivate.
+</ParamField>
+
+**Response** `200 OK`
+
+Returns the updated admin object. The `tipo_evento` in the audit log will be one of `admin_updated`, `admin_deactivated`, or `admin_reactivated` depending on the `activo` state change.
+
+---
+
+## DELETE /api/v1/auth/admins/:id
+
+Requires `admins.manage` permission. Deactivates an admin account.
+
+<Warning>
+  Deleting an admin via this endpoint is a **soft delete** — it sets `activo = false` and increments `token_version` to immediately invalidate all active sessions. The admin record is **not removed** from the database. To reactivate a soft-deleted admin, use `PATCH /api/v1/auth/admins/:id` with `{"activo": true}`.
+</Warning>
+
+```bash
+curl -X DELETE https://api.zippi.app/api/v1/auth/admins/12 \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Path parameters**
+
+<ParamField path="id" type="integer" required>
+  The numeric admin ID to deactivate.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "id_admin": 12,
+    "nombre": "Luis Torres",
+    "email": "luis@zippi.app",
+    "rol": "city_admin",
+    "activo": false,
+    "token_version": 2,
+    "...": "full admin object"
+  }
+}
+```
+
+Returns the updated admin object with `activo: false` and an incremented `token_version`. A `admin_deactivated` audit event is recorded.
+
+---
+
+## How build\_access\_profile() shapes the response
+
+Every admin response object (from list, create, get, update, and delete) is serialized using `build_access_profile()`. This function accepts the raw `role`, `scope_type`, `scope_id`, and `scope_label` stored in the database and returns a fully resolved profile. The resulting fields are:
+
+| Field | Description |
+|---|---|
+| `rol` | Normalized role key |
+| `role_label` | Human-readable role name |
+| `role_description` | One-sentence role description |
+| `surface` | UI surface identifier |
+| `home_route` | Default post-login route |
+| `permissions` | Expanded list of permission strings |
+| `modules` | List of accessible module keys |
+| `scope_type` | Resolved scope type key |
+| `scope_id` | Scoped entity ID (`null` for global) |
+| `scope_label` | Human-readable scope label |
+
+Umbrella permissions are automatically expanded. For example, an admin with `catalog.manage` will also have all 18 fine-grained `catalog.*` action permissions (`catalog.create`, `catalog.edit_price`, etc.) included in their `permissions` array.

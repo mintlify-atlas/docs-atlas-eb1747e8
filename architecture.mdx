@@ -1,0 +1,215 @@
+---
+title: "Zippi System Architecture and Tech Stack"
+sidebarTitle: "Architecture"
+description: "Explore Zippi's monorepo layout, layered backend architecture (presentation → application → domain → infrastructure), and frontend portal structure."
+---
+
+Zippi is a monorepo containing a Python/Flask backend and a TypeScript/Vite frontend that share no runtime code but are versioned together. The backend follows a domain-driven design with four explicit horizontal layers and vertical module slices. The frontend is a single Vite application that renders one of several portal surfaces depending on the authenticated user's role.
+
+## Monorepo Layout
+
+```text
+Zippi/
+├── backend/
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── middlewares.py          # CORS, JWT, request hooks
+│   │   │   └── router.py              # Blueprint registration
+│   │   ├── bootstrap/
+│   │   │   ├── app_factory.py         # create_app(), Flask factory
+│   │   │   └── extensions.py          # db, migrate singletons
+│   │   ├── config/
+│   │   │   ├── settings.py            # Pydantic settings from .env
+│   │   │   └── logging.py             # Structured log config
+│   │   ├── infrastructure/
+│   │   │   └── db/
+│   │   │       ├── models.py          # SQLAlchemy ORM models
+│   │   │       └── session.py         # Engine + session factory
+│   │   ├── modules/                   # One directory per domain feature
+│   │   │   ├── auth/                  # Authentication, RBAC, guards
+│   │   │   ├── business/              # Business portal, scoping
+│   │   │   ├── businesses/            # Multi-brand management
+│   │   │   ├── cashier/               # Till, arqueo, turno
+│   │   │   ├── city_ops/              # City operations, dispatch
+│   │   │   ├── clients/               # Customer profiles
+│   │   │   ├── couriers/              # Courier fleet
+│   │   │   ├── customer/              # Client-facing marketplace
+│   │   │   ├── dashboard/             # Operative summaries
+│   │   │   ├── db_orders/             # Core order operations
+│   │   │   ├── evidence/              # Delivery evidence uploads
+│   │   │   ├── incidents/             # Support tickets
+│   │   │   ├── onboarding/            # Business onboarding flow
+│   │   │   ├── payments/              # Wompi gateway + webhooks
+│   │   │   ├── platform/              # Platform-level admin
+│   │   │   ├── reports/               # Analytics and exports
+│   │   │   ├── service_types/         # Service type catalog
+│   │   │   └── whatsapp/              # WhatsApp Cloud API (optional)
+│   │   └── shared/
+│   │       ├── domain/                # Shared domain primitives
+│   │       ├── exceptions/            # HttpError and domain errors
+│   │       └── observability/         # Prometheus metrics
+│   ├── scripts/
+│   │   ├── seed_data.py               # Database seed
+│   │   ├── create_admin.py            # Bootstrap admin users
+│   │   └── run_worker.py              # Celery worker launcher
+│   ├── tests/
+│   │   ├── by_role/                   # Per-role contract tests
+│   │   ├── unit/                      # Unit tests
+│   │   └── integration/               # Integration tests
+│   ├── manage.py                      # Flask dev server entrypoint
+│   ├── requirements.txt               # Production dependencies
+│   └── requirements-dev.txt           # Dev + test dependencies
+└── frontend/
+    ├── src/
+    │   ├── modules/                   # Feature modules (mirrors backend)
+    │   │   └── business/
+    │   │       └── permissions.ts     # FE permission mirror of rbac.py
+    │   └── portals/                   # One directory per surface
+    │       ├── superadmin/
+    │       ├── admin/
+    │       ├── business/
+    │       ├── branch/
+    │       ├── courier/
+    │       └── client/
+    └── vite.config.ts
+```
+
+## Flask App Factory
+
+The backend is bootstrapped via `create_app()` in `backend/app/bootstrap/app_factory.py`. This factory pattern keeps the Flask application object decoupled from the module-level import chain, which is important for migrations (`flask db upgrade` skips middleware and route registration) and for test isolation.
+
+```python
+# backend/app/bootstrap/app_factory.py (simplified)
+def create_app() -> Flask:
+    settings = get_settings()
+    app = Flask(__name__)
+    app.config["SQLALCHEMY_DATABASE_URI"] = settings.database_url
+    app.config["MAX_CONTENT_LENGTH"] = settings.max_content_length_mb * 1024 * 1024
+
+    db.init_app(app)
+    migrate.init_app(app, db)
+
+    @app.get("/health")
+    def _health():
+        return {"success": True, "status": "ok", "service": settings.app_name}
+
+    @app.get("/ready")
+    def _ready():
+        # Performs a live SELECT 1 against the database
+        ...
+
+    if not _is_migration_cli():
+        register_middlewares(app)  # CORS, JWT, request logging
+        register_routes(app)       # All blueprints
+
+    return app
+```
+
+The factory also exposes `/health` and `/ready` endpoints for load-balancer checks, and a `/metrics` endpoint that renders Prometheus-formatted output.
+
+## DDD Layering
+
+Every module under `backend/app/modules/` follows the same four-layer structure. Dependencies flow strictly downward — presentation may call application, application calls domain and infrastructure, but domain knows nothing about HTTP or SQL.
+
+| Layer | Responsibility | Example files |
+|-------|---------------|---------------|
+| **Presentation** | HTTP routes, request parsing, response serialization, guards | `routes.py`, `guards.py`, `serializers.py` |
+| **Application** | Use-case orchestration, transaction boundaries | `services.py`, `use_cases.py` |
+| **Domain** | Business rules, entities, state machine, RBAC | `rbac.py`, `entities.py`, `order_fsm.py` |
+| **Infrastructure** | SQLAlchemy repositories, Redis, S3, external APIs | `repositories.py`, `orm.py` |
+
+### Module Registry
+
+The `router.py` file is the definitive list of all API modules. Blueprints registered there:
+
+| Blueprint | URL prefix | Module |
+|-----------|-----------|--------|
+| `auth_bp` | `/api/v1/auth` | Authentication and JWT |
+| `customer_auth_bp` | `/api/v1/auth` | Customer-facing auth |
+| `business_bp` | `/api/v1/business` | Business portal endpoints |
+| `businesses_bp` | `/api/v1/businesses` | Multi-brand management |
+| `marketplace_public_bp` | `/api/v1` | Public marketplace (no auth) |
+| `cashier_bp` | `/api/v1/cashier` | Till and payment collection |
+| `clients_bp` | `/api/v1/clients` | Customer profiles |
+| `couriers_bp` | `/api/v1/couriers` | Courier fleet management |
+| `dashboard_bp` | `/api/v1/dashboard` | Operative dashboards |
+| `customer_orders_bp` | `/api/v1/orders` | Customer order creation |
+| `db_orders_bp` | `/api/v1/orders` | Admin order operations |
+| `evidence_bp` | `/api/v1/orders` | Delivery evidence |
+| `incidents_bp` | `/api/v1/orders` | Order-linked incidents |
+| `payments_bp` | `/api/v1/orders` | Payment registration |
+| `payments_webhook_bp` | `/api/v1/payments` | Wompi webhook receiver |
+| `reports_bp` | `/api/v1/reports` | Analytics and exports |
+| `service_types_bp` | `/api/v1/service-types` | Service type catalog |
+| `city_ops_bp` | `/api/v1/city` | City operations and dispatch |
+| `onboarding_bp` | `/api/v1/onboarding` | Business onboarding |
+| `customer_bp` | `/api/v1/customer` | Customer profile endpoints |
+| `platform_bp` | `/api/v1/platform` | Platform admin |
+| `whatsapp_bp` | `/api/v1/whatsapp` | WhatsApp Cloud API (optional) |
+
+<Note>
+  The WhatsApp blueprint is registered inside a `try/except ModuleNotFoundError` block. If the `whatsapp` module dependencies are not installed, the API starts normally without WhatsApp routes and logs a warning.
+</Note>
+
+## Database: MySQL + SQLAlchemy
+
+All persistent state lives in MySQL 8. SQLAlchemy is used as the ORM with Alembic for schema migrations. Key connection settings come from `.env`:
+
+```bash
+DATABASE_URL=mysql+pymysql://root:password@127.0.0.1:3306/zippi_db
+```
+
+The engine is configured with connection pooling (`pool_size`, `max_overflow`, `pool_pre_ping`) and isolation-level settings from `app_factory.py`. All financial amounts are stored as integers (centavos) or `DECIMAL` — never `float`.
+
+Every operational entity carries **tenant discriminator columns** (`id_negocio`, `id_sucursal`) and an audit trail. No query runs without a scope filter applied at the query level. See [Multi-Tenant Scoping](/concepts/multi-tenant-scoping) for the full enforcement model.
+
+## Async Workers: Redis + Celery
+
+Background jobs — push notifications, WhatsApp outbound messages, Wompi webhook processing, order assignment timeouts — are processed by Celery workers connected to Redis as the message broker and result backend.
+
+```bash
+# .env
+REDIS_URL=redis://127.0.0.1:6379/0
+CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
+```
+
+Start the worker separately:
+
+```bash
+cd backend
+python scripts/run_worker.py
+```
+
+The API itself does not require the Celery worker to be running for core order operations, but notifications and async reconciliation will queue up without it.
+
+## Frontend Portal Structure
+
+The frontend is a single Vite application. The `src/portals/` directory contains one sub-directory per portal surface. The router loads the correct portal based on the `surface` field in the JWT payload, which is set server-side from `ROLE_DEFINITIONS` in `rbac.py`.
+
+```text
+frontend/src/portals/
+├── superadmin/    → super_admin, platform_admin
+├── admin/         → country_admin, city_admin, zippi_branch_admin,
+│                    operations_admin, finance_admin, support_agent
+├── business/      → business_owner, business_admin
+├── branch/        → business_branch_admin, kitchen_staff, cashier, waiter
+├── courier/       → delivery_driver
+└── client/        → customer
+```
+
+Each portal surface imports its own permission helper that mirrors `backend/app/modules/auth/domain/rbac.py`. The FE uses permissions only for rendering decisions (show/hide buttons, routes). The BE re-validates every request regardless of what the FE claims.
+
+<Note>
+  **VITE_USE_MOCKS:** Set `VITE_USE_MOCKS=true` in `frontend/.env` to run the frontend with static in-memory mock data. This bypasses all API calls and is intended for UI development only. Mocks do not enforce permissions or tenant scoping.
+</Note>
+
+## External Integrations
+
+| Integration | Purpose | Config prefix |
+|------------|---------|---------------|
+| **Wompi** | Payment gateway (Colombia) — card, Nequi, PSE | `WOMPI_*` |
+| **WhatsApp Cloud API** | Order intake and status notifications via Meta Graph v22.0 | `WHATSAPP_*` |
+| **AWS S3** | Evidence photo and document storage (optional; defaults to local filesystem) | `AWS_*` |
+| **SMTP** | Transactional email | `MAIL_*` |
+| **LLM local** | Optional fine-tuned TinyLlama model for the WhatsApp bot | `LLM_LOCAL_*` |

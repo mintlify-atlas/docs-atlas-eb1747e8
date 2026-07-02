@@ -1,0 +1,169 @@
+---
+title: "Admin Console: Platform-Level Operations and Management"
+sidebarTitle: "Admin Console"
+description: "The admin console serves 8 administrative roles with scoped views for city operations, fleet management, financials, support, and platform configuration."
+---
+
+The Admin Console is the backbone of Zippi's internal management layer. Eight distinct administrative roles access it — each seeing only the surfaces, modules, and actions their scope allows. From global platform configuration down to a single city's daily dispatch queue, the console unifies operations, finance, and support without exposing every actor to every lever.
+
+## The 8 Admin Roles
+
+| Role | Surface | Scope | Key Modules |
+|------|---------|-------|-------------|
+| `super_admin` | `superadmin_panel` | Global | All modules — full platform control, security, audit |
+| `platform_admin` | `superadmin_panel` | Global | `PLATFORM_MODULES` — countries, cities, Zippi branches, platform config |
+| `country_admin` | `admin_panel` | Country | Cities, Zippi branches, businesses, orders, couriers, dispatch, pricing, zones, cashier, payments, liquidations, reports |
+| `city_admin` | `admin_panel` | City | Orders, clients, couriers, dispatch, businesses, branches, catalog, cashier, payments, liquidations, coupons, incidents, reports |
+| `zippi_branch_admin` | `admin_panel` | Zippi Branch | Orders, clients, couriers, dispatch, businesses, branches, cashier, payments, liquidations, incidents, reports |
+| `operations_admin` | `admin_panel` | City | Orders, clients, couriers, dispatch, businesses, evidence, support, incidents, reports |
+| `finance_admin` | `admin_panel` | City | Orders, cashier, payments, liquidations, reports, audit |
+| `support_agent` | `admin_panel` | City | Orders, clients, businesses, couriers, support, incidents, evidence |
+
+<Note>
+`super_admin` and `platform_admin` share the `superadmin_panel` surface at `/app/superadmin` with global scope. All other admin roles land on the `admin_panel` surface at their scoped home route — `/app/admin/country`, `/app/admin/city`, `/app/admin/branch`, or `/app/admin`.
+</Note>
+
+### Role Capabilities at a Glance
+
+**`super_admin`** — Unrestricted control over the entire platform: all modules, all scopes, full audit trail access. Every sensitive action taken under this role is subject to the strictest audit requirements.
+
+**`platform_admin`** — Configures the platform topology (countries, cities, Zippi branches), manages global settings, and administers other users. Identical permissions to `super_admin` but its operational focus is configuration, not root-account security.
+
+**`country_admin`** — Manages everything within a single country boundary: city creation, Zippi branch management, business onboarding, and the full operations stack (dispatch, fleet, finance). Cannot touch platform-level configuration.
+
+**`city_admin`** — The primary operational controller for a city. Approves branch requests, manages couriers and dispatch, and handles financial reconciliation scoped to their city. Cannot leave city scope.
+
+**`zippi_branch_admin`** — Operates a Zippi-owned branch without visibility into external business branches. Has dispatch, fleet, cashier, and liquidation access but no pricing or zone management.
+
+**`operations_admin`** — The city's operations tower controller. Focused on live orders, dispatch, fleet, evidence, and incident management. Deliberately excluded from cashier, payments, and liquidations.
+
+**`finance_admin`** — Handles all money-related workflows: Wompi payment reconciliation, cashier shifts, liquidations, commissions, financial reports, and audit logs. No access to dispatch, fleet, zones, or catalog.
+
+**`support_agent`** — Attends tickets, WhatsApp queries, client issues, and operational incidents. Has full context for orders and clients but **cannot touch money** — no `cashier`, `payments`, or `liquidations` permissions.
+
+---
+
+## The Three Admin Sub-Panels
+
+<CardGroup cols={3}>
+  <Card title="Operations" icon="truck">
+    Live order management, courier dispatch, fleet control, zone and pricing configuration, and evidence tracking. Primary roles: `operations_admin`, `city_admin`, `country_admin`.
+  </Card>
+  <Card title="Finance" icon="circle-dollar-to-slot">
+    Wompi payment reconciliation, cashier shift management, liquidation reports, commission audits, and financial analytics. Primary role: `finance_admin`.
+  </Card>
+  <Card title="Support" icon="headset">
+    Ticket queue, WhatsApp channel management, client and order context lookup, and incident resolution. Primary role: `support_agent`.
+  </Card>
+</CardGroup>
+
+---
+
+## City Operations Workflow
+
+City operations is the logistical glue between a business that prepares an order and the customer who receives it. The workflow below reflects the `city_ops` module and the console dispatch panel.
+
+### Dispatch and Courier Assignment
+
+When an order reaches the `Empacado` (packed) state, it enters the dispatch queue. Roles with the `dispatch.manage` permission — `operations_admin`, `city_admin`, and `country_admin` — assign a courier from the available fleet.
+
+```
+Order: Empacado → Esperando domiciliario
+Dispatch assigns courier →
+Order: Domiciliario asignado → Recogido → En camino → Llegó → Entregado
+```
+
+Courier assignment considers availability, current zone, active load, and distance. Every assignment is audited with the acting user, timestamp, and courier ID.
+
+City operations branch-request endpoints:
+
+```http
+GET  /api/v1/city-ops/branch-requests
+POST /api/v1/city-ops/branch-requests/{branch_id}/approve
+POST /api/v1/city-ops/branch-requests/{branch_id}/reject
+GET  /api/v1/city-ops/business-requests
+POST /api/v1/city-ops/business-requests/{business_id}/approve
+POST /api/v1/city-ops/business-requests/{business_id}/reject
+GET  /api/v1/city-ops/alerts
+```
+
+### Zones and Pricing
+
+Zones define geographic coverage areas used for both courier assignment and delivery fee calculation. Pricing tables tie tariff rates to zones and distances.
+
+- Zone management requires the `zones.manage` permission (available to `country_admin` and `city_admin`).
+- Pricing requires the `pricing` permission group.
+- Pricing changes are **versioned** — they never retroactively recalculate completed orders.
+
+### Fleet Management
+
+The couriers module (`/api/v1/couriers`) provides fleet visibility:
+
+```http
+GET   /api/v1/couriers                         # List couriers (couriers.read)
+POST  /api/v1/couriers                         # Register courier (couriers.manage)
+GET   /api/v1/couriers/{courier_id}            # Get courier detail
+PATCH /api/v1/couriers/{courier_id}            # Update courier status/info
+DELETE /api/v1/couriers/{courier_id}           # Deactivate courier
+POST  /api/v1/couriers/{courier_id}/assignments  # Assign order to courier (orders.assign)
+GET   /api/v1/couriers/{courier_id}/history    # Delivery history
+GET   /api/v1/couriers/by-phone/{phone}        # Lookup by phone number
+```
+
+---
+
+## Finance Admin View
+
+The `finance_admin` role has a dedicated financial lens over the platform. It accesses the `cashier`, `payments`, `liquidations`, `reports`, and `audit` modules — and nothing else from the operations stack.
+
+### Wompi Payments and Reconciliation
+
+The `payments` module surfaces all Wompi transactions, their statuses, and reconciliation states. The `finance_admin` holds `payments.read` and `payments.manage` permissions, enabling full conciliation workflows.
+
+### Cashier Shift Reconciliation
+
+The cashier module exposes shift-level financial records:
+
+```http
+GET  /api/v1/cashier/overview                          # Cashier overview (cashier.read)
+GET  /api/v1/cashier/shifts                            # List shifts
+POST /api/v1/cashier/shifts                            # Open a shift (cashier.reconcile)
+GET  /api/v1/cashier/shifts/{shift_id}                 # Get shift detail
+POST /api/v1/cashier/shifts/{shift_id}/base            # Register initial base amount
+GET  /api/v1/cashier/shifts/{shift_id}/movements       # List movements
+POST /api/v1/cashier/shifts/{shift_id}/movements       # Create movement
+GET  /api/v1/cashier/shifts/{shift_id}/summary         # Shift summary
+POST /api/v1/cashier/shifts/{shift_id}/close           # Close shift / arqueo
+GET  /api/v1/cashier/shifts/{shift_id}/liquidation     # Shift liquidation report
+```
+
+### Liquidations
+
+Liquidation records capture the full financial settlement per business per period: gross revenue, Zippi commission, payment gateway fee, and net payout. The `finance_admin` holds `liquidations.read` and `liquidations.manage`, allowing them to review, generate, and export settlement reports.
+
+<Tip>
+All monetary amounts in Zippi are stored as integers (centavos) or `DECIMAL` — never floating-point. Liquidation calculations are auditable and reproducible; commission changes are versioned and do not alter past records.
+</Tip>
+
+---
+
+## Support Agent View
+
+The `support_agent` role enters the console at `/admin-platform/support` and works from a ticket-centric interface with full order and client context.
+
+### What Support Sees
+
+- **Tickets and incidents** — full queue with status, priority, and linked order/client data. Permissions: `incidents.read`, `incidents.manage`.
+- **WhatsApp channel** — incoming messages and conversation threads for client support and order-related queries.
+- **Order lookup** — `orders.read` provides full order detail including state history, which the agent uses to contextualize and resolve issues.
+- **Client lookup** — `clients.read` gives full client history for pattern identification and personalization.
+- **Evidence** — `evidence.read` allows viewing delivery photos and proof-of-delivery records to resolve disputes.
+- **Courier context** — `couriers.read` for delivery status and courier details during incident investigation.
+
+### What Support Cannot Do
+
+Support agents hold **no financial permissions**. They cannot view cashier shifts, Wompi transactions, or liquidation data. This is a deliberate security boundary: `support_agent` has no `cashier`, `payments`, or `liquidations` permissions.
+
+<Warning>
+Never grant `payments`, `cashier`, or `liquidations` permissions to a `support_agent`. Financial data access is reserved for `finance_admin`, `city_admin`, `country_admin`, and roles with explicit financial scope.
+</Warning>

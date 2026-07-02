@@ -1,0 +1,164 @@
+---
+title: "WhatsApp Bot Integration for Order Receiving"
+sidebarTitle: "WhatsApp"
+description: "Configure the Zippi WhatsApp bot using the Meta Graph API. Covers webhook verification, signature validation, message templates, and the ordering conversation flow."
+---
+
+Zippi includes a WhatsApp bot that accepts delivery orders directly from customers via the Meta Cloud API. Incoming messages are routed through a conversation session service, parsed for intent, and — when recognized — converted into platform orders with real-time status updates sent back to the customer's phone.
+
+## Prerequisites
+
+Before you configure the integration you need:
+
+- A **Meta Business Account** with WhatsApp Business API access granted
+- A **WhatsApp Business phone number** registered in [Meta Business Manager](https://business.facebook.com)
+- A publicly reachable HTTPS URL for the webhook (use `BACKEND_PUBLIC_URL` or a tunnel like ngrok in local dev)
+
+## Required Environment Variables
+
+Add the following to your `.env` file (copy from `.env.example`):
+
+```bash
+WHATSAPP_API_VERSION=v22.0
+WHATSAPP_GRAPH_BASE_URL=https://graph.facebook.com
+WHATSAPP_PHONE_NUMBER_ID=          # From Meta Business Manager → Phone Numbers
+WHATSAPP_BUSINESS_ACCOUNT_ID=      # Your WhatsApp Business Account ID
+WHATSAPP_ACCESS_TOKEN=             # Permanent or temporary user access token
+WHATSAPP_VERIFY_TOKEN=             # A random string you choose for webhook challenge
+WHATSAPP_WEBHOOK_SECRET=           # App secret used for HMAC-SHA256 signature validation
+WHATSAPP_DEFAULT_COUNTRY_CODE=57   # Prepended when normalizing phone numbers (57 = Colombia)
+```
+
+`WHATSAPP_DEFAULT_COUNTRY_CODE` is used to normalize incoming phone numbers before storing or routing them. The default value `57` targets Colombia.
+
+<Warning>
+The `backend/.env` file was previously committed to git with a live WhatsApp access token. If you are working with a clone of the repository, **rotate `WHATSAPP_ACCESS_TOKEN` immediately** via Meta Business Manager, then verify the new token appears only in your `.env` (which is gitignored) and never in git history.
+</Warning>
+
+## Setting Up the Webhook
+
+<Steps>
+  <Step title="Generate a secure verify token">
+    Choose a random, unguessable string and set it as `WHATSAPP_VERIFY_TOKEN` in your environment. This value is sent back to Meta during the handshake to prove ownership of the endpoint.
+
+    ```bash
+    python -c "import secrets; print(secrets.token_urlsafe(32))"
+    ```
+  </Step>
+
+  <Step title="Expose your backend publicly">
+    Your webhook URL must be reachable over HTTPS. In development, use a tunnel:
+
+    ```bash
+    # Example with ngrok
+    ngrok http 5000
+    # Then set: BACKEND_PUBLIC_URL=https://<your-ngrok-id>.ngrok.io
+    ```
+
+    The full webhook URL is:
+
+    ```
+    https://<BACKEND_PUBLIC_URL>/api/v1/whatsapp/webhook
+    ```
+  </Step>
+
+  <Step title="Register the webhook in Meta Business Manager">
+    1. Open **Meta Business Manager** → **WhatsApp** → **Configuration** → **Webhook**.
+    2. Enter your webhook URL (from step 2).
+    3. Enter the same string you set as `WHATSAPP_VERIFY_TOKEN`.
+    4. Subscribe to the **messages** field.
+    5. Click **Verify and Save**. Meta sends a `GET` request with `hub.challenge`; the Zippi backend echoes it back automatically.
+  </Step>
+
+  <Step title="Set the App Secret for signature validation">
+    Copy your **App Secret** from Meta App Dashboard → **Settings** → **Basic** and set it as `WHATSAPP_WEBHOOK_SECRET`. This is distinct from the access token and is used only for HMAC verification.
+  </Step>
+
+  <Step title="Send a test message">
+    Send any text message from a WhatsApp account to your registered business number. Check your backend logs; you should see the parsed message payload and the bot's reply.
+  </Step>
+</Steps>
+
+## Webhook Security
+
+Every inbound `POST /api/v1/whatsapp/webhook` request from Meta includes an `X-Hub-Signature-256` header. Zippi verifies this before processing any payload:
+
+```python
+# app/infrastructure/external/whatsapp/webhook_security.py
+def verify_meta_signature(
+    *, raw_body: bytes, signature_header: str | None, app_secret: str | None
+) -> bool:
+    if not app_secret:
+        return False
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    provided = signature_header.split("=", 1)[1].strip()
+    if not provided:
+        return False
+    expected = hmac.new(
+        app_secret.encode("utf-8"), raw_body, hashlib.sha256
+    ).hexdigest()
+    return secrets.compare_digest(provided, expected)
+```
+
+Key points:
+- The comparison uses `secrets.compare_digest` to prevent timing attacks.
+- If `WHATSAPP_WEBHOOK_SECRET` is not set, **all requests are rejected** (`return False` — fail-closed).
+- The raw request body is signed, not the parsed JSON, so the header must be read before any JSON decoding.
+
+## Message Templates
+
+Zippi uses lightweight Python functions as message templates. All outbound message strings are defined in `app/infrastructure/external/whatsapp/message_templates.py`:
+
+| Function | When used | Example output |
+|---|---|---|
+| `welcome_template()` | When the bot cannot parse an intent from the message | `"Hola, gracias por escribir a Zippi. Cuéntanos qué servicio necesitas y te ayudamos."` |
+| `unsupported_message_template()` | When the inbound message type is not `text` (e.g. image, audio) | `"Por ahora solo procesamos mensajes de texto."` |
+| `order_status_template(order_id, status)` | When an order changes state and the customer is notified | `"Pedido ORD-00123: en camino"` |
+
+To add a new template, define a new function in `message_templates.py` and call it from the appropriate handler in `webhook_service.py` or the notification layer.
+
+## The Ordering Conversation Flow
+
+The `WhatsAppClient` in `app/infrastructure/external/whatsapp/client.py` wraps the Meta Graph API `/{api_version}/{phone_number_id}/messages` endpoint. It validates that the base URL is `https://` before making any outbound call (SSRF mitigation):
+
+```python
+# app/infrastructure/external/whatsapp/client.py
+class WhatsAppClient:
+    def send_text(self, to: str, body: str) -> Dict[str, Any]:
+        if not self._messages_url.startswith("https://"):
+            raise ValueError("WhatsApp Graph base URL must use https")
+        ...
+```
+
+The full inbound message lifecycle is:
+
+```
+Customer sends WhatsApp message
+        │
+        ▼
+POST /api/v1/whatsapp/webhook
+        │  HMAC-SHA256 verified (X-Hub-Signature-256)
+        ▼
+handle_webhook_payload(payload)
+        │  parse_incoming_messages → list of {from, type, text}
+        ▼
+  type == "text"? ──No──► send unsupported_message_template()
+        │
+       Yes
+        ▼
+route_whatsapp_message(phone, text)
+        │  ConversationSessionService resolves session state
+        │  Intent parsed → order created (or session step advanced)
+        ▼
+client.send_text(from, response_text)
+        │  If routing returns None → send welcome_template()
+        ▼
+Customer receives reply
+```
+
+When an order is created or its status changes, `order_status_template(order_id, status)` is sent to the customer's phone number.
+
+## Disabling the Integration
+
+If `WHATSAPP_PHONE_NUMBER_ID` or `WHATSAPP_ACCESS_TOKEN` is empty, `get_whatsapp_client()` returns `None` and all outbound sends are skipped silently. The webhook endpoint remains active for verification but will not dispatch messages.

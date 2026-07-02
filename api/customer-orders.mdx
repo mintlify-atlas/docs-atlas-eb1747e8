@@ -1,0 +1,466 @@
+---
+title: "Customer Orders API: Place and Track Delivery Orders"
+sidebarTitle: "Customer Orders"
+description: "Create orders as a guest or registered customer. Totals are always recalculated server-side from the catalog. Retrieve order status and history."
+---
+
+The Zippi Orders API lets customers place delivery orders either as a guest (phone number only) or as a registered customer with a JWT session. In both cases, the server looks up every item's price directly from the catalog — any totals or unit prices sent by the client are silently ignored. Order state progresses through a defined FSM and is surfaced via the `status` field on every order response.
+
+<Warning>
+  **Client-supplied totals are never trusted.** The `subtotal`, `total`, `deliveryFee`,
+  and any per-item price fields you send in the request body are ignored. All monetary
+  values in the response are recalculated server-side from the live product catalog.
+  This prevents price manipulation and ensures consistent billing.
+</Warning>
+
+---
+
+## Order Item Structure
+
+Every order must include an `items` array. Each element describes one product line in the cart.
+
+```json Order item object
+{
+  "productId": "prod-101",
+  "quantity": 2,
+  "options": [
+    {
+      "option_id": "opt-size",
+      "choices": ["choice-large"]
+    }
+  ],
+  "note": "Sin cebolla, por favor"
+}
+```
+
+<ParamField body="productId" type="string" required>
+  Product reference in `prod-{id}` format (e.g. `prod-101`). Plain numeric IDs
+  are also accepted. Must correspond to an active product that belongs to the
+  target business.
+</ParamField>
+
+<ParamField body="quantity" type="integer" required>
+  Number of units. Must be greater than zero.
+</ParamField>
+
+<ParamField body="options" type="array">
+  Selected option groups (e.g. size, temperature). Each element must include
+  `option_id` and a `choices` array of selected choice IDs. Currently reserved
+  for future use — the server stores the raw payload but does not yet add option
+  surcharges to the price.
+</ParamField>
+
+<ParamField body="note" type="string">
+  Free-text line note for kitchen staff (e.g. allergy instructions). Stored in
+  the `observaciones` field of the order item.
+</ParamField>
+
+---
+
+## Create Guest Order
+
+Places an order without requiring a customer account. The server matches or creates
+a customer record by phone number and returns a signed `guestAccessToken` that
+can be used later to retrieve the order.
+
+**`POST /api/v1/orders/guest`**
+
+No authentication required.
+
+### Request Body
+
+<ParamField body="business" type="object" required>
+  Business reference object.
+
+  <ParamField body="business.id" type="string" required>
+    Composite business ref (`biz-{businessId}-branch-{branchId}`) or branch slug.
+  </ParamField>
+
+  <ParamField body="business.businessId" type="integer">
+    Numeric parent business ID. Used to scope product price lookups.
+  </ParamField>
+
+  <ParamField body="business.deliveryFee" type="integer">
+    Delivery fee in centavos, as advertised to the customer. The server stores
+    this value as the logistics component of `valor_servicio`.
+  </ParamField>
+
+  <ParamField body="business.serviceFee" type="integer">
+    Platform service fee in centavos.
+  </ParamField>
+</ParamField>
+
+<ParamField body="items" type="array" required>
+  One or more [order item objects](#order-item-structure). Must contain at least
+  one element; an empty array returns HTTP 422.
+</ParamField>
+
+<ParamField body="address" type="object" required>
+  Delivery address for this order.
+
+  <ParamField body="address.address" type="string" required>
+    Street address text (stored as `direccion_texto`).
+  </ParamField>
+
+  <ParamField body="address.reference" type="string">
+    Delivery reference or landmark.
+  </ParamField>
+
+  <ParamField body="address.lat" type="number">
+    Latitude coordinate (−90 to 90).
+  </ParamField>
+
+  <ParamField body="address.lng" type="number">
+    Longitude coordinate (−180 to 180).
+  </ParamField>
+</ParamField>
+
+<ParamField body="paymentMethod" type="string">
+  Payment method. Defaults to `cash`. Common values: `cash`, `card`, `wompi`.
+</ParamField>
+
+<ParamField body="phone" type="string" required>
+  Customer phone number. Used to find or create the customer record. Required
+  for guest orders; omit for authenticated customer orders.
+</ParamField>
+
+<ParamField body="name" type="string">
+  Customer name. Used when creating a new guest customer record. Defaults to
+  `"Cliente invitado"` if omitted.
+</ParamField>
+
+<ParamField body="customerNotes" type="string">
+  General notes for the entire order (separate from per-item notes).
+</ParamField>
+
+```bash cURL — guest order
+curl -X POST https://api.zippi.app/api/v1/orders/guest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "business": {
+      "id": "biz-12-branch-5",
+      "businessId": 12,
+      "deliveryFee": 3500,
+      "serviceFee": 1200
+    },
+    "items": [
+      { "productId": "prod-101", "quantity": 2 },
+      { "productId": "prod-205", "quantity": 1, "note": "Sin hielo" }
+    ],
+    "address": {
+      "address": "Cra 15 # 93-47, Apto 301",
+      "reference": "Edificio azul, portería lateral",
+      "lat": 4.6765,
+      "lng": -74.0478
+    },
+    "paymentMethod": "cash",
+    "phone": "3001234567",
+    "name": "Laura Gómez",
+    "customerNotes": "Llamar al llegar"
+  }'
+```
+
+### Response
+
+HTTP 201 on success.
+
+<ResponseField name="data.id" type="string">
+  Order reference in the format `order-{id}` (e.g. `order-42`). Use this to
+  retrieve the order later.
+</ResponseField>
+
+<ResponseField name="data.orderNumber" type="string">
+  Human-readable order code, formatted as `ZP-{YYMMDD}-{clientId}-{seq}`
+  (e.g. `ZP-250115-0007-3421`).
+</ResponseField>
+
+<ResponseField name="data.guestAccessToken" type="string">
+  Signed token required to retrieve this order as a guest. Store this token in
+  the client. **Present only for guest orders** (absent for authenticated customers).
+</ResponseField>
+
+<ResponseField name="data.status" type="string">
+  Initial order state. Always `pending` on creation.
+</ResponseField>
+
+<ResponseField name="data.subtotal" type="number">
+  Server-calculated product subtotal (sum of `price × quantity` for all items).
+</ResponseField>
+
+<ResponseField name="data.deliveryFee" type="number">
+  Combined logistics and service fee stored on the order.
+</ResponseField>
+
+<ResponseField name="data.total" type="number">
+  Final total (`subtotal + deliveryFee + serviceFee`), calculated server-side.
+</ResponseField>
+
+<ResponseField name="data.createdAt" type="string">
+  ISO 8601 UTC timestamp of order creation.
+</ResponseField>
+
+```json Example response (guest order)
+{
+  "success": true,
+  "message": "OK",
+  "data": {
+    "id": "order-42",
+    "orderNumber": "ZP-250115-0007-3421",
+    "customerType": "registered",
+    "userId": "7",
+    "business": { "id": "biz-12-branch-5", "name": "Pizza Express" },
+    "address": {
+      "address": "Cra 15 # 93-47, Apto 301",
+      "reference": "Edificio azul, portería lateral"
+    },
+    "items": [],
+    "paymentMethod": "cash",
+    "subtotal": 31200,
+    "deliveryFee": 4700,
+    "serviceFee": 0,
+    "total": 35900,
+    "customerNotes": "Llamar al llegar",
+    "status": "pending",
+    "createdAt": "2025-01-15T18:32:11",
+    "tracking": [],
+    "guestAccessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  }
+}
+```
+
+<Note>
+  The `ALLOW_MANUAL_ORDER_CREATION` environment variable controls whether this
+  endpoint accepts orders outside of configured operating hours. When set to
+  `false`, orders submitted while all branches are closed are rejected. Defaults
+  to `true` in the provided `.env.example`.
+</Note>
+
+---
+
+## Create Authenticated Customer Order
+
+Places an order on behalf of the currently logged-in customer. Identical to the
+guest flow except that contact fields (`phone`, `name`) are sourced from the
+authenticated customer record and no `guestAccessToken` is returned.
+
+**`POST /api/v1/orders/customer`**
+
+Requires customer JWT in the `Authorization: Bearer {token}` header.
+
+### Request Body
+
+Same as [guest order](#create-guest-order), but `phone` and `name` are **not required** —
+they are ignored when a valid customer JWT is present. The customer record is resolved
+from the `id` claim in the JWT.
+
+```bash cURL — authenticated customer order
+curl -X POST https://api.zippi.app/api/v1/orders/customer \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "business": {
+      "id": "biz-12-branch-5",
+      "businessId": 12,
+      "deliveryFee": 3500,
+      "serviceFee": 1200
+    },
+    "items": [
+      { "productId": "prod-101", "quantity": 1 }
+    ],
+    "address": {
+      "address": "Cra 15 # 93-47, Apto 301"
+    },
+    "paymentMethod": "card"
+  }'
+```
+
+Returns the same response shape as the guest order endpoint, **without** the
+`guestAccessToken` field. HTTP 201 on success.
+
+---
+
+## List Customer Order History
+
+Returns up to 100 of the authenticated customer's most recent orders, newest first.
+
+**`GET /api/v1/customer/orders`**
+
+Requires customer JWT in the `Authorization: Bearer {token}` header.
+
+```bash cURL
+curl https://api.zippi.app/api/v1/customer/orders \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Response
+
+<ResponseField name="data" type="array">
+  List of order summary objects ordered by `createdAt` descending.
+
+  <ResponseField name="data[].id" type="string">
+    Order reference (`order-{id}`).
+  </ResponseField>
+
+  <ResponseField name="data[].orderNumber" type="string">
+    Human-readable order code (`ZP-YYMMDD-CCCC-SSSS`).
+  </ResponseField>
+
+  <ResponseField name="data[].status" type="string">
+    Current order state. See [Order States](#order-states) below.
+  </ResponseField>
+
+  <ResponseField name="data[].subtotal" type="number">
+    Product subtotal in the platform's monetary unit.
+  </ResponseField>
+
+  <ResponseField name="data[].total" type="number">
+    Final total including fees.
+  </ResponseField>
+
+  <ResponseField name="data[].paymentMethod" type="string">
+    Payment method used (`cash`, `card`, `wompi`, etc.).
+  </ResponseField>
+
+  <ResponseField name="data[].createdAt" type="string">
+    ISO 8601 creation timestamp (UTC).
+  </ResponseField>
+</ResponseField>
+
+---
+
+## Get Single Order
+
+Retrieves the full detail of one order. Works for both authenticated customers
+and guests, with different access proofs.
+
+**`GET /api/v1/customer/orders/:order_id`**
+
+- **Authenticated customers:** provide `Authorization: Bearer {token}`. The server
+  validates that the order belongs to the requesting customer.
+- **Guest customers:** omit the `Authorization` header and pass the
+  `X-Guest-Order-Token` header with the token returned at order creation.
+
+<Note>
+  The `order_id` path segment accepts both the `order-{id}` format (e.g.
+  `order-42`) and the human-readable order code (e.g. `ZP-250115-0007-3421`).
+</Note>
+
+### Path Parameters
+
+<ParamField path="order_id" type="string" required>
+  Order reference in `order-{id}` format or the full order code (`ZP-…`).
+</ParamField>
+
+### Headers
+
+<ParamField header="Authorization" type="string">
+  `Bearer {jwt}` — required when retrieving an order as a registered customer.
+</ParamField>
+
+<ParamField header="X-Guest-Order-Token" type="string">
+  Signed guest access token returned at order creation. Required for unauthenticated
+  retrieval of a guest order. Can also be passed as the `access_token` or
+  `guestAccessToken` query parameter as a fallback.
+</ParamField>
+
+```bash cURL — authenticated customer
+curl https://api.zippi.app/api/v1/customer/orders/order-42 \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+```bash cURL — guest access via header
+curl https://api.zippi.app/api/v1/customer/orders/order-42 \
+  -H "X-Guest-Order-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+```bash cURL — guest access via query parameter (fallback)
+curl "https://api.zippi.app/api/v1/customer/orders/order-42?guestAccessToken=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Response
+
+<ResponseField name="data.id" type="string">
+  Order reference (`order-{id}`).
+</ResponseField>
+
+<ResponseField name="data.orderNumber" type="string">
+  Human-readable order code.
+</ResponseField>
+
+<ResponseField name="data.status" type="string">
+  Current order state. See [Order States](#order-states) below.
+</ResponseField>
+
+<ResponseField name="data.business" type="object">
+  Brief business info: `id` and `name`.
+</ResponseField>
+
+<ResponseField name="data.address" type="object">
+  Delivery address: `address` (text) and optional `reference`.
+</ResponseField>
+
+<ResponseField name="data.items" type="array">
+  Line items as stored. Each item includes `name`, `quantity`,
+  `precio_unitario_estimado`, and `subtotal_estimado`.
+</ResponseField>
+
+<ResponseField name="data.paymentMethod" type="string">
+  Payment method (`cash`, `card`, `wompi`, etc.).
+</ResponseField>
+
+<ResponseField name="data.subtotal" type="number">
+  Product subtotal (server-calculated).
+</ResponseField>
+
+<ResponseField name="data.deliveryFee" type="number">
+  Combined delivery and logistics fee stored on the order.
+</ResponseField>
+
+<ResponseField name="data.serviceFee" type="number">
+  Platform service fee component.
+</ResponseField>
+
+<ResponseField name="data.total" type="number">
+  Final order total (server-calculated).
+</ResponseField>
+
+<ResponseField name="data.customerNotes" type="string">
+  General order notes.
+</ResponseField>
+
+<ResponseField name="data.createdAt" type="string">
+  ISO 8601 UTC timestamp.
+</ResponseField>
+
+<ResponseField name="data.tracking" type="array">
+  Order state history events. Each event includes `estado_nuevo` (new state),
+  `actor_tipo`, and `fecha_cambio`.
+</ResponseField>
+
+---
+
+## Order States
+
+The Zippi order FSM uses the following `status` values. Transitions are validated
+server-side and cannot be skipped.
+
+| State | Description |
+|---|---|
+| `pending` | Order received, awaiting acceptance by the business |
+| `confirmed` | Business has confirmed the order |
+| `preparing` | Order is being prepared |
+| `ready` | Ready for pickup by the courier |
+| `in_transit` | Courier has picked up the order |
+| `delivered` | Order successfully delivered |
+| `cancelled` | Order cancelled before delivery |
+| `failed` | Order could not be completed |
+| `customer_absent` | Customer was unreachable at delivery |
+| `rescheduled` | Delivery rescheduled by agreement |
+| `refunded` | Payment refunded |
+
+<Note>
+  Guest order retrieval is **fail-closed**: if the `X-Guest-Order-Token` is
+  missing, expired, or invalid, the server returns HTTP 404 rather than 401 to
+  avoid disclosing that the order exists. Store the token from the creation
+  response immediately and persistently.
+</Note>

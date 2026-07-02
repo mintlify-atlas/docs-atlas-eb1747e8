@@ -1,0 +1,174 @@
+---
+title: "Business Portal: Managing Your Brand and Operations"
+sidebarTitle: "Business Portal"
+description: "The Business Portal gives business_owner and business_admin roles a dashboard, catalog management, order tracking, branch administration, and settlement reports."
+---
+
+The Business Portal is where brand owners and administrators run their day-to-day operations on Zippi. From a single interface, they manage the product catalog, track live orders, configure branches, review settlement statements, and monitor team activity — all scoped tightly to their own business group or brand.
+
+## Who Accesses the Portal
+
+Two roles land on the Business Portal at `/app/business`:
+
+| Role | Scope | What They See |
+|------|-------|---------------|
+| `business_owner` | `business_group` | All brands and branches under their corporate group, including group-level liquidations and team management |
+| `business_admin` | `business` | A single brand and its branches; identical module set to `business_owner` but without `business_groups` management |
+
+Both roles share the same `business_portal` surface and the same `BUSINESS_MODULES` set. The difference is entirely in scope: a `business_owner` can switch between multiple brands within their group; a `business_admin` is bound to one brand.
+
+---
+
+## Portal Modules
+
+<CardGroup cols={2}>
+  <Card title="Dashboard" icon="chart-line">
+    Operational and executive overview: today's revenue, active orders, branch alerts, pending acceptances, and liquidation summaries. Actionable cards let owners accept or reject orders without leaving the dashboard.
+
+    `GET /api/v1/business/dashboard`
+  </Card>
+  <Card title="Orders" icon="bag-shopping">
+    Full order lifecycle management: list, detail, status transitions, and incident reporting. Supports filtering by state, branch, date range, and courier.
+
+    `GET /api/v1/business/orders`
+    `GET /api/v1/business/orders/{order_id}`
+    `PATCH /api/v1/business/orders/{order_id}/status`
+    `POST /api/v1/business/orders/{order_id}/incident`
+  </Card>
+  <Card title="Products" icon="box">
+    Full catalog management: create, update, archive, restore, and control availability. Includes product images, pricing, costs, taxes, categories, and promotions.
+
+    `GET /api/v1/business/products`
+    `POST /api/v1/business/products`
+    `PUT /api/v1/business/products/{product_id}`
+    `PATCH /api/v1/business/products/{product_id}/status`
+    `DELETE /api/v1/business/products/{product_id}`
+  </Card>
+  <Card title="Options & Additions" icon="list-check">
+    Manage modifier groups, variant options, and additions (e.g., extra cheese, drink size). Additions are attached to products and visible to customers at ordering time.
+
+    `GET /api/v1/business/options`
+    `POST /api/v1/business/options`
+    `PUT /api/v1/business/options/{option_id}`
+    `PATCH /api/v1/business/options/{option_id}/status`
+    `DELETE /api/v1/business/options/{option_id}`
+  </Card>
+  <Card title="Branches" icon="store">
+    View, create, update, and configure business branches. Submit new branch requests for city approval, update schedules, manage branch status, and assign branch administrators.
+
+    `GET /api/v1/business/branches`
+    `POST /api/v1/business/branches/request`
+    `PATCH /api/v1/business/branches/{branch_id}`
+    `PATCH /api/v1/business/branches/{branch_id}/status`
+    `PUT /api/v1/business/branches/{branch_id}/schedule`
+    `POST /api/v1/business/branches/{branch_id}/admins`
+  </Card>
+  <Card title="Settlements" icon="file-invoice-dollar">
+    View detailed settlement reports per period: gross revenue, Zippi commission, payment gateway fee, and net payout. Available to roles with `liquidations.read`.
+
+    `GET /api/v1/business/settlements`
+    `GET /api/v1/business/settlements/{settlement_id}`
+  </Card>
+  <Card title="Analytics" icon="chart-bar">
+    Business performance metrics: order volume trends, revenue by branch, top-selling products, and customer return rate. Respects the role's scope — a `business_admin` sees only their brand.
+
+    `GET /api/v1/business/analytics`
+  </Card>
+  <Card title="Team" icon="users">
+    Manage team members across the business: list existing users and create new ones with role and branch assignments.
+
+    `GET /api/v1/business/team`
+    `POST /api/v1/business/team`
+  </Card>
+  <Card title="Activity" icon="clock-rotate-left">
+    Audit log of business-level actions: who changed what and when. Includes both viewed activity and operational event recording.
+
+    `GET /api/v1/business/activity`
+    `POST /api/v1/business/activity/operational`
+  </Card>
+  <Card title="Notifications" icon="bell">
+    In-portal notification feed for new orders, branch status changes, settlement availability, and platform announcements.
+
+    `GET /api/v1/business/notifications`
+  </Card>
+</CardGroup>
+
+---
+
+## Onboarding Status
+
+When a new business is being configured, the onboarding status endpoint tracks progress through the setup checklist (brand info, branches, catalog, schedules):
+
+```http
+GET /api/v1/business/onboarding/status
+```
+
+This endpoint requires the `onboarding` portal permission and returns a structured status object indicating which setup steps are complete, in progress, or pending. City and country admins use this data during the onboarding approval flow.
+
+---
+
+## Dashboard Metrics and Order Management
+
+The dashboard (`GET /api/v1/business/dashboard`) is designed to be **operationally actionable**, not just informational. It surfaces:
+
+- **Revenue today** — gross sales across all active branches in scope
+- **Active orders** — count of orders currently in flight, broken down by state
+- **Branch alerts** — paused branches, low-stock signals, and unaccepted order backlogs
+- **Pending acceptances** — orders waiting for the business to accept, each with direct accept/reject actions
+- **Overdue in kitchen** — orders exceeding their SLA in the `Preparando` state
+- **Liquidation summary** — current period's net earnings vs. the previous period
+
+The order management flow from the portal perspective follows the business side of the full state machine:
+
+<Steps>
+  <Step title="Order Arrives">
+    A new order enters state `Pendiente aceptación`. The dashboard card and the Orders module both surface it immediately with Accept and Reject actions.
+  </Step>
+  <Step title="Accept or Reject">
+    Calling `PATCH /api/v1/business/orders/{order_id}/status` transitions the order to `Aceptado` or triggers a rejection with a mandatory reason.
+  </Step>
+  <Step title="Kitchen Preparation">
+    The kitchen queue picks up the order. The business portal's kitchen queue endpoint provides a live comanda view:
+    `GET /api/v1/business/kitchen/queue`
+  </Step>
+  <Step title="Order Packed">
+    Kitchen marks the order `Empacado`. City dispatch takes over for courier assignment.
+  </Step>
+  <Step title="Track Delivery">
+    The portal surfaces delivery state in real time until the order reaches `Entregado` and then `Cerrado`.
+  </Step>
+  <Step title="Settlement">
+    Completed orders accumulate toward the next settlement period. The `settlements` module shows the breakdown once liquidation is processed.
+  </Step>
+</Steps>
+
+---
+
+## Kitchen Queue and Waiter Floor
+
+Beyond the main Orders module, the portal exposes two live operational views for business-level roles monitoring branch activity:
+
+```http
+GET /api/v1/business/kitchen/queue   # Live comanda queue (requires orders permission)
+GET /api/v1/business/waiter/floor    # Table/floor status view (requires orders permission)
+```
+
+These endpoints are scoped to the calling user's business and branch context. `business_owner` and `business_admin` can use them for oversight; `kitchen_staff` and `waiter` roles access the same data through their dedicated portal screens in the Branch Portal.
+
+---
+
+## Branch Requests and Approval
+
+New branches are submitted via `POST /api/v1/business/branches/request` and enter a pending state until a `city_admin` or `country_admin` approves or rejects them through the city operations panel:
+
+```http
+GET  /api/v1/city-ops/branch-requests
+POST /api/v1/city-ops/branch-requests/{branch_id}/approve
+POST /api/v1/city-ops/branch-requests/{branch_id}/reject
+```
+
+Once approved, the branch becomes `Operando` and appears in the marketplace for its city.
+
+<Tip>
+A `business_owner`'s scope covers the full `business_group`. If you need to restrict a user to a single brand, assign them `business_admin` with scope `business` instead.
+</Tip>

@@ -1,0 +1,103 @@
+---
+title: "Zippi: Delivery & Business Operations Platform"
+sidebarTitle: "Introduction"
+description: "Zippi is a multi-tenant delivery platform with role-based portals for customers, couriers, businesses, and administrators — all backed by a single Flask API."
+---
+
+Zippi is a full-stack delivery and business operations platform built to serve every actor in the food and local commerce delivery chain — from the customer placing an order on their phone to the super administrator overseeing the entire platform. A single Flask API powers sixteen distinct roles, each of which enters its own dedicated portal surface with a tailored interface, a scoped dataset, and a permission set tuned to that role's job. No role sees what belongs to another tenant or role group.
+
+## What Zippi Is
+
+At its core, Zippi orchestrates the complete lifecycle of a delivery order: creation on the client app, acceptance and preparation by the business, assignment and pickup by the courier, and final delivery with evidence and payment reconciliation. Layered on top of that operational core are tools for multi-brand business management, geographic city operations, financial settlement, customer support, and platform administration.
+
+Zippi is organized as a **monorepo** with two top-level directories:
+
+```
+Zippi/
+├── backend/     # Flask (Python) REST API
+└── frontend/    # Vue/React (TypeScript + Vite) portal application
+```
+
+The backend exposes a versioned REST API at `/api/v1` and handles authentication, RBAC, multi-tenant scoping, order state management, payments, and all business logic. The frontend is a single Vite application that renders the correct portal surface based on the authenticated user's role.
+
+## The 16 Roles
+
+Zippi defines exactly 16 roles spanning from global platform administration down to the individual customer or courier. Each role has a fixed surface, a default scope type, a home route, and a permission set derived from `backend/app/modules/auth/domain/rbac.py`. No role can be invented at runtime — the catalog is the single source of truth.
+
+| Role | Label | Surface |
+|------|-------|---------|
+| `super_admin` | Super administrador | superadmin_panel |
+| `platform_admin` | Administrador plataforma | superadmin_panel |
+| `country_admin` | Administrador país | admin_panel |
+| `city_admin` | Administrador ciudad | admin_panel |
+| `zippi_branch_admin` | Administrador sucursal Zippi | admin_panel |
+| `operations_admin` | Administrador operaciones | admin_panel |
+| `finance_admin` | Administrador financiero | admin_panel |
+| `support_agent` | Agente soporte | admin_panel |
+| `business_owner` | Dueño de negocio | business_portal |
+| `business_admin` | Administrador negocio | business_portal |
+| `business_branch_admin` | Administrador sucursal negocio | business_branch_portal |
+| `kitchen_staff` | Cocina | kitchen_app |
+| `cashier` | Cajero | cashier_app |
+| `waiter` | Mesero | waiter_app |
+| `delivery_driver` | Domiciliario | courier_app |
+| `customer` | Cliente | client_app |
+
+See [Roles & Portals](/concepts/roles-and-portals) for the complete reference including home routes, scope types, and module lists for every role.
+
+## The 5 Portal Surfaces
+
+Each role is mapped to one of the portal surfaces below. The surface controls which part of the frontend application is rendered, which modules are in the sidebar, and which API endpoints are accessible.
+
+<CardGroup cols={2}>
+  <Card title="Superadmin Panel" icon="shield-halved">
+    Global platform control for `super_admin` and `platform_admin`. Covers countries, cities, Zippi branches, platform configuration, audit, security, and full operational visibility across every tenant.
+  </Card>
+  <Card title="Admin Panel" icon="chart-bar">
+    Operational and financial management for `country_admin`, `city_admin`, `zippi_branch_admin`, `operations_admin`, `finance_admin`, and `support_agent`. Each admin role is scoped to its geography (country → city → Zippi branch).
+  </Card>
+  <Card title="Business Portal" icon="store">
+    Brand and multi-location management for `business_owner` and `business_admin`. Covers the full catalog, orders, settlements, analytics, and notifications scoped to a business group or individual brand.
+  </Card>
+  <Card title="Business Branch Portal" icon="utensils">
+    Day-to-day local operations for `business_branch_admin`, `kitchen_staff`, `cashier`, and `waiter`. Each of these roles lands in a focused screen — the kitchen sees only command tickets; the cashier sees only the till.
+  </Card>
+  <Card title="Courier App" icon="motorcycle">
+    Mobile delivery experience for `delivery_driver`. Shows assigned deliveries, allows evidence uploads, tracks the courier's personal cash balance, and handles incident reporting.
+  </Card>
+  <Card title="Client App" icon="mobile">
+    Consumer marketplace for `customer`. Browse businesses, place orders via the app or WhatsApp bot, track delivery in real time, and open support tickets.
+  </Card>
+</CardGroup>
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Backend API | Python 3.11+, Flask, SQLAlchemy |
+| Database | MySQL 8 |
+| Async workers | Redis + Celery |
+| Payments | Wompi (sandbox & production) |
+| Messaging | WhatsApp Cloud API (Meta Graph v22.0) |
+| File storage | Local filesystem or AWS S3 |
+| Frontend | TypeScript, Vue/React, Vite |
+| CI | GitHub Actions (ruff, bandit, pytest, tsc) |
+
+The backend follows a domain-driven design with four explicit layers: **presentation** (Flask blueprints and guards), **application** (use-case services), **domain** (entities, RBAC, state machine), and **infrastructure** (SQLAlchemy repositories, Redis, S3). See [Architecture](/architecture) for the full breakdown.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run Zippi locally in under 10 minutes — backend on :5000, frontend on :5174.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Explore the monorepo layout, DDD layering, module registry, and external integrations.
+  </Card>
+  <Card title="Roles & Portals" icon="users" href="/concepts/roles-and-portals">
+    Full reference for all 16 roles, their surfaces, scopes, and module sets.
+  </Card>
+  <Card title="Order State Machine" icon="diagram-project" href="/concepts/order-state-machine">
+    The 13-state happy path, 7 exception states, and the complete transition table.
+  </Card>
+</CardGroup>

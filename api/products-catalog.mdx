@@ -1,0 +1,333 @@
+---
+title: "Products and Catalog Management API Reference"
+sidebarTitle: "Products & Catalog"
+description: "CRUD endpoints for products, categories, and add-on options. Action-level permissions control who can edit prices, images, availability, or archive items."
+---
+
+The Products and Catalog endpoints expose full lifecycle management for a business's sellable items and their add-on option groups. All write operations are permission-gated at the action level — holding `catalog.manage` implies all fine-grained catalog actions, but individual permissions such as `catalog.edit_price` or `catalog.edit_availability` can be granted in isolation for operators who should only control a subset of the catalog.
+
+<Warning>
+  All monetary amounts — `price` (precio) and `cost` (precio_costo) — **must be integers expressed in centavos (COP)**. Never send floats. Example: COP 12,500 → `1250000`. The database enforces a `CHECK (precio >= 0)` constraint and the value object layer will reject any float representation before it reaches persistence.
+</Warning>
+
+---
+
+## Catalog permission matrix
+
+| Permission | Description |
+|---|---|
+| `catalog.read` | View products, categories, add-ons, and tax rates |
+| `catalog.create` | Create a new product in the catalog |
+| `catalog.manage` | Full edit access — implies all actions below |
+| `catalog.edit_name` | Edit a product's display name |
+| `catalog.edit_price` | Edit the sale price |
+| `catalog.edit_cost` | Edit the product cost (internal) |
+| `catalog.edit_taxes` | Edit product tax rates |
+| `catalog.edit_image` | Replace the product image |
+| `catalog.edit_availability` | Mark a product available or sold out |
+| `catalog.duplicate` | Duplicate an existing product |
+| `catalog.archive` | Archive (soft-hide) a product |
+| `catalog.delete` | Logical delete of a product |
+| `catalog.restore` | Restore an archived product |
+| `catalog.export` | Export the catalog to CSV/XLSX |
+| `catalog.import` | Import products from a spreadsheet |
+| `catalog.change_category` | Move a product to a different category |
+| `catalog.move_branch` | Move a product between branches |
+| `catalog.change_supplier` | Update the product's supplier |
+| `catalog.assign_promotions` | Attach or detach promotions |
+
+<Note>
+  `kitchen_staff` is granted `catalog.edit_availability` by default, allowing them to mark items as sold out from the kitchen screen without access to pricing or other fields.
+</Note>
+
+---
+
+## Products
+
+### GET /api/v1/business/products
+
+Returns the list of products for the authenticated business scope. Results are filtered by scope automatically — a `business_branch_admin` sees only the products available at their branch.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/products \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id_producto": 42,
+      "nombre": "Bandeja Paisa",
+      "descripcion": "Frijoles, chicharrón, arroz, huevo y aguacate",
+      "precio": 2200000,
+      "precio_costo": 900000,
+      "categoria": "Platos fuertes",
+      "activo": true
+    }
+  ]
+}
+```
+
+<ResponseField name="id_producto" type="integer">
+  Internal primary key of the product.
+</ResponseField>
+
+<ResponseField name="nombre" type="string">
+  Display name shown to customers (max 140 characters).
+</ResponseField>
+
+<ResponseField name="descripcion" type="string | null">
+  Optional long-form description.
+</ResponseField>
+
+<ResponseField name="precio" type="integer">
+  Sale price in centavos (COP). Always an integer.
+</ResponseField>
+
+<ResponseField name="precio_costo" type="integer | null">
+  Internal cost price in centavos. Visible only to roles with `catalog.edit_cost`.
+</ResponseField>
+
+<ResponseField name="categoria" type="string | null">
+  Category label (max 80 characters).
+</ResponseField>
+
+<ResponseField name="activo" type="boolean">
+  `true` if the product is currently available for ordering.
+</ResponseField>
+
+---
+
+### POST /api/v1/business/products
+
+Creates a new product in the catalog. Returns `201 Created`. Requires `catalog.create` or `catalog.manage`.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/business/products \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre": "Ajiaco Santafereño",
+    "descripcion": "Sopa típica bogotana con pollo y papas criollas",
+    "precio": 1800000,
+    "precio_costo": 700000,
+    "categoria": "Sopas",
+    "activo": true
+  }'
+```
+
+<ParamField body="nombre" type="string" required>
+  Product display name. Max 140 characters.
+</ParamField>
+
+<ParamField body="descripcion" type="string">
+  Optional customer-facing description.
+</ParamField>
+
+<ParamField body="precio" type="integer" required>
+  Sale price in centavos (integer). Must be ≥ 0.
+</ParamField>
+
+<ParamField body="precio_costo" type="integer">
+  Internal cost in centavos. Stored for margin reporting. Requires `catalog.edit_cost`.
+</ParamField>
+
+<ParamField body="categoria" type="string">
+  Category label string. Max 80 characters.
+</ParamField>
+
+<ParamField body="activo" type="boolean" default="true">
+  Initial availability state.
+</ParamField>
+
+<ParamField body="imagen_url" type="string">
+  Absolute URL to the product image. Requires `catalog.edit_image`.
+</ParamField>
+
+<ParamField body="tasa_impuesto" type="integer">
+  Tax rate in basis points (e.g. `800` = 8%). Requires `catalog.edit_taxes`.
+</ParamField>
+
+---
+
+### GET /api/v1/business/products/:id
+
+Returns the full detail for a single product, identified by `product_id`.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/products/42 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+### PUT /api/v1/business/products/:id  ·  PATCH /api/v1/business/products/:id
+
+Updates one or more fields on an existing product. Both `PUT` (full replace) and `PATCH` (partial update) are accepted. Each field mutation is gated by its corresponding fine-grained permission at the service layer.
+
+```bash
+curl -X PATCH https://api.zippi.app/api/v1/business/products/42 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"precio": 1900000}'
+```
+
+<ParamField body="nombre" type="string">
+  Requires `catalog.edit_name`.
+</ParamField>
+
+<ParamField body="precio" type="integer">
+  Sale price in centavos. Requires `catalog.edit_price`.
+</ParamField>
+
+<ParamField body="precio_costo" type="integer">
+  Cost price in centavos. Requires `catalog.edit_cost`.
+</ParamField>
+
+<ParamField body="tasa_impuesto" type="integer">
+  Tax rate in basis points. Requires `catalog.edit_taxes`.
+</ParamField>
+
+<ParamField body="imagen_url" type="string">
+  Image URL. Requires `catalog.edit_image`.
+</ParamField>
+
+<ParamField body="categoria" type="string">
+  Category label. Requires `catalog.change_category`.
+</ParamField>
+
+---
+
+### DELETE /api/v1/business/products/:id
+
+Soft-deletes (archives) a product. The product is hidden from the customer catalog but remains in the database and can be restored. Requires `catalog.archive` or `catalog.delete`.
+
+```bash
+curl -X DELETE https://api.zippi.app/api/v1/business/products/42 \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200 OK`**
+
+```json
+{ "success": true, "data": { "archived": true } }
+```
+
+---
+
+### PATCH /api/v1/business/products/:id/status
+
+Toggles the `activo` (availability) flag on a product without touching any other fields. Useful for marking items as sold out during a shift. Requires `catalog.edit_availability`.
+
+```bash
+curl -X PATCH https://api.zippi.app/api/v1/business/products/42/status \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"activo": false}'
+```
+
+<ParamField body="activo" type="boolean" required>
+  `true` to make the product available; `false` to mark it sold out.
+</ParamField>
+
+---
+
+## Options (Add-on groups)
+
+Option groups let customers customize their order — e.g. "Choose your sauce" or "Add toppings". Each group contains one or more selectable items and can be marked as required or optional.
+
+### GET /api/v1/business/options
+
+Returns all add-on option groups for the business scope.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/options \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+### POST /api/v1/business/options
+
+Creates a new option group. Returns `201 Created`. Requires `catalog.create` or `catalog.manage`.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/business/options \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre": "Elige tu salsa",
+    "obligatorio": true,
+    "min_selecciones": 1,
+    "max_selecciones": 1,
+    "items": [
+      {"nombre": "Hogao", "precio_adicional": 0},
+      {"nombre": "Chimichurri", "precio_adicional": 50000}
+    ]
+  }'
+```
+
+<ParamField body="nombre" type="string" required>
+  Group name shown to the customer.
+</ParamField>
+
+<ParamField body="obligatorio" type="boolean" default="false">
+  Whether the customer must make a selection from this group.
+</ParamField>
+
+<ParamField body="min_selecciones" type="integer" default="0">
+  Minimum number of items the customer must select.
+</ParamField>
+
+<ParamField body="max_selecciones" type="integer" default="1">
+  Maximum number of items the customer may select.
+</ParamField>
+
+<ParamField body="items" type="array">
+  Initial list of selectable items. Each item has `nombre` (string) and `precio_adicional` (integer centavos).
+</ParamField>
+
+---
+
+### PUT /api/v1/business/options/:id  ·  PATCH /api/v1/business/options/:id
+
+Updates an existing option group. Both verbs are accepted; `PATCH` allows partial updates.
+
+```bash
+curl -X PATCH https://api.zippi.app/api/v1/business/options/7 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"nombre": "Elige tu salsa favorita"}'
+```
+
+---
+
+### DELETE /api/v1/business/options/:id
+
+Deletes an option group. Requires `catalog.delete` or `catalog.manage`.
+
+```bash
+curl -X DELETE https://api.zippi.app/api/v1/business/options/7 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+### PATCH /api/v1/business/options/:id/status
+
+Toggles the availability of an option group without deleting it. When disabled, the group will not be shown to customers during ordering.
+
+```bash
+curl -X PATCH https://api.zippi.app/api/v1/business/options/7/status \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"activo": false}'
+```
+
+<ParamField body="activo" type="boolean" required>
+  `true` to enable the option group; `false` to hide it from customers.
+</ParamField>

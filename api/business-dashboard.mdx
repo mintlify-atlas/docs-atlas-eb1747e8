@@ -1,0 +1,292 @@
+---
+title: "Business Dashboard and Analytics API Reference"
+sidebarTitle: "Dashboard"
+description: "GET /api/v1/business/dashboard — Returns live operational metrics: active orders, revenue, branch status, and recent activity for the authenticated business scope."
+---
+
+The Business Dashboard endpoints give authenticated business users a live view of their operational health, sales analytics, recent activity, and pending notifications — all scoped to their JWT-resolved business context. Every request passes through the `require_business_portal` guard, which reads the JWT, resolves the business scope, and injects that scope into the downstream service layer before any handler logic runs.
+
+## Authentication and the `require_business_portal` guard
+
+All endpoints in the Business Portal are protected by the `require_business_portal(module)` decorator. It performs three checks in order:
+
+1. **JWT validation** — calls `get_current_user()` to verify and decode the Bearer token.
+2. **Module access** — looks up the caller's role in `BUSINESS_ROLE_MODULES` and confirms the role is allowed to access the requested module.
+3. **Business operating check** — calls `assert_business_operating(scope, module, method=request.method)` to ensure the business scope is active before mutating operations proceed.
+
+If any check fails, the guard raises an `HttpError` with `403 Forbidden`.
+
+| Role | Modules accessible |
+|---|---|
+| `business_owner` | dashboard, orders, products, options, branches, settlements, analytics, profile, activity, onboarding, team |
+| `business_admin` | dashboard, orders, products, options, branches, settlements, analytics, profile, activity, onboarding, team |
+| `business_branch_admin` | dashboard, orders, products, options, branches, analytics, activity, team |
+| `kitchen_staff` | dashboard, orders, activity |
+| `cashier` | dashboard, orders, settlements, analytics, activity |
+| `waiter` | dashboard, orders, activity |
+| `super_admin` / `platform_admin` | all modules |
+
+---
+
+## GET /api/v1/business/dashboard
+
+Returns a live operational summary for the authenticated business scope. The response includes active order counts, today's revenue totals, branch statuses, and recent high-priority events.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/dashboard \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": {
+    "active_orders": 14,
+    "revenue_today_centavos": 345000,
+    "branches": [
+      { "branch_id": "br_01", "nombre": "Sede Centro", "status": "operando" }
+    ],
+    "recent_activity": []
+  }
+}
+```
+
+<ResponseField name="success" type="boolean">
+  Always `true` on a 2xx response.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="Dashboard data object">
+    <ResponseField name="active_orders" type="integer">
+      Count of orders currently in a non-terminal state within the business scope.
+    </ResponseField>
+    <ResponseField name="revenue_today_centavos" type="integer">
+      Gross revenue for the current calendar day, expressed in centavos (COP). Never a float.
+    </ResponseField>
+    <ResponseField name="branches" type="array">
+      List of branch summaries, each containing `branch_id`, `nombre`, and `status`.
+    </ResponseField>
+    <ResponseField name="recent_activity" type="array">
+      Latest audit events for the scope. Mirrors the `/activity` feed, limited to the most recent entries.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GET /api/v1/business/analytics
+
+Returns aggregated sales trends and top-product rankings for the business scope. Backed by the same `BusinessPortalService.dashboard()` handler as `/dashboard` but presented with an analytics-oriented projection.
+
+```bash
+curl -X GET "https://api.zippi.app/api/v1/business/analytics?from_date=2024-01-01&to_date=2024-01-31" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Required role:** `business_owner`, `business_admin`, `business_branch_admin`, `cashier`, `super_admin`, or `platform_admin` (module: `analytics`).
+
+---
+
+## GET /api/v1/business/notifications
+
+Returns pending notifications for the authenticated business scope. Routed through the `orders` module permission check.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/notifications \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "notif_abc",
+      "tipo": "order_pending",
+      "mensaje": "Nuevo pedido esperando confirmación",
+      "leida": false,
+      "fecha": "2024-06-01T14:35:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## GET /api/v1/business/activity
+
+Returns a paginated audit log of actions taken within the business scope. Useful for compliance review and operational traceability.
+
+```bash
+curl -X GET "https://api.zippi.app/api/v1/business/activity?page=1&page_size=50" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Query parameters**
+
+<ParamField query="page" type="integer" default="1">
+  Page number, 1-indexed.
+</ParamField>
+
+<ParamField query="page_size" type="integer" default="20">
+  Maximum records per page. Recommended maximum: 100.
+</ParamField>
+
+---
+
+## POST /api/v1/business/activity
+
+Records a custom activity entry against the authenticated business scope. Returns `201 Created`.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/business/activity \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"tipo": "manual_note", "descripcion": "Stock revisado mañana"}'
+```
+
+<ParamField body="tipo" type="string" required>
+  Activity type identifier, e.g. `manual_note`, `config_change`.
+</ParamField>
+
+<ParamField body="descripcion" type="string" required>
+  Human-readable description of the activity event.
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Optional arbitrary key/value pairs to attach to the entry.
+</ParamField>
+
+---
+
+## POST /api/v1/business/activity/operational
+
+Records a structured operational activity event — typically triggered by automated processes or integrations rather than direct user action. Returns `201 Created`.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/business/activity/operational \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"event": "shift_opened", "branch_id": "br_01", "actor_id": "user_99"}'
+```
+
+<ParamField body="event" type="string" required>
+  Canonical event name, e.g. `shift_opened`, `branch_paused`, `catalog_synced`.
+</ParamField>
+
+<ParamField body="branch_id" type="string">
+  Branch scope for the event, if applicable.
+</ParamField>
+
+<ParamField body="actor_id" type="string">
+  User ID of the actor who triggered the event.
+</ParamField>
+
+---
+
+## GET /api/v1/business/profile
+
+Returns the full profile record for the authenticated business scope, including name, business type, contact details, commission rate, contract status, and creation date.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/profile \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response fields**
+
+<ResponseField name="id_negocio" type="integer">
+  Internal primary key of the business record.
+</ResponseField>
+
+<ResponseField name="nombre" type="string">
+  Business display name, up to 140 characters.
+</ResponseField>
+
+<ResponseField name="tipo_negocio" type="string">
+  Business type (e.g. `restaurante`, `tienda`, `farmacia`).
+</ResponseField>
+
+<ResponseField name="tasa_comision" type="string">
+  Zippi commission rate as a decimal string (e.g. `"12.00"`). This value is versioned — changes do not retroactively affect settled periods.
+</ResponseField>
+
+<ResponseField name="estado_contrato" type="string">
+  Contract status: `activo`, `suspendido`, or `terminado`.
+</ResponseField>
+
+<ResponseField name="activo" type="boolean">
+  Whether the business is currently enabled on the platform.
+</ResponseField>
+
+---
+
+## PUT /api/v1/business/profile
+
+Updates the mutable fields of the business profile. Requires `business_owner` or `business_admin`.
+
+```bash
+curl -X PUT https://api.zippi.app/api/v1/business/profile \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre": "La Buena Mesa",
+    "telefono": "+573001234567",
+    "descripcion": "Cocina casera desde 1998",
+    "imagen_url": "https://cdn.zippi.app/negocios/la-buena-mesa.jpg"
+  }'
+```
+
+<ParamField body="nombre" type="string">
+  Business display name (max 140 characters).
+</ParamField>
+
+<ParamField body="telefono" type="string">
+  Contact phone number (max 30 characters).
+</ParamField>
+
+<ParamField body="email" type="string">
+  Contact email address.
+</ParamField>
+
+<ParamField body="descripcion" type="string">
+  Public description shown to customers.
+</ParamField>
+
+<ParamField body="imagen_url" type="string">
+  Absolute URL to the business logo/banner image (max 500 characters).
+</ParamField>
+
+---
+
+## GET /api/v1/business/onboarding/status
+
+Returns the onboarding checklist status for the business scope. Use this to drive the setup wizard in the Business Portal frontend and to determine whether the business is ready to receive live orders.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/onboarding/status \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": {
+    "profile_complete": true,
+    "branch_created": true,
+    "catalog_published": false,
+    "payment_method_configured": false,
+    "overall_complete": false
+  }
+}
+```
+
+<Note>
+  Until `overall_complete` is `true`, the business scope may be restricted from accepting live customer orders depending on platform policy. Complete all checklist items via the corresponding API endpoints before going live.
+</Note>

@@ -1,0 +1,187 @@
+---
+title: "Customer App: Marketplace, Ordering, and Order Tracking"
+sidebarTitle: "Client App"
+description: "The Zippi customer app lets guests and registered users browse the marketplace, build a cart, check out, and track deliveries in real time."
+---
+
+The Zippi customer app — surface `client_app` at `/app/cliente` — is where end customers discover local businesses, build their order, check out, and follow their delivery from kitchen to door. Both guests and registered customers can place orders. Registered accounts unlock saved addresses, order history, favorites, and direct support access.
+
+## Guest vs. Registered Customer
+
+| Capability | Guest | Registered Customer |
+|-----------|-------|---------------------|
+| Browse marketplace | ✓ | ✓ |
+| View product detail | ✓ | ✓ |
+| Place an order | ✓ (guest order) | ✓ (customer order) |
+| Track an order | ✓ (with token) | ✓ |
+| Saved addresses | ✗ | ✓ |
+| Order history | ✗ | ✓ |
+| Favorites | ✗ | ✓ |
+| Customer support / incidents | ✗ | ✓ |
+
+Guests place orders via `POST /api/v1/orders/guest` and receive an `X-Guest-Order-Token` in the response. This token is required to subsequently read that guest order — it acts as the authentication mechanism for unauthenticated order lookups.
+
+Registered customers authenticate through:
+
+```http
+POST /api/v1/customer/login     # Log in with credentials
+POST /api/v1/customer/register  # Create a new account
+```
+
+---
+
+## Ordering Flow
+
+<Steps>
+  <Step title="Browse the Marketplace">
+    The marketplace is publicly accessible — no authentication required. Customers browse businesses available in their city.
+
+    ```http
+    GET /api/v1/marketplace/businesses          # List businesses (by city)
+    GET /api/v1/marketplace/businesses/{slug}   # Get a specific business by slug
+    GET /api/v1/business-categories            # List business categories
+    ```
+
+    The response includes business name, logo, category, open/closed status, average delivery time, and delivery fee for the customer's zone.
+  </Step>
+  <Step title="Browse Products">
+    Once a business is selected, customers browse its menu and product details.
+
+    ```http
+    GET /api/v1/marketplace/businesses/{business_ref}/products   # Full product catalog
+    GET /api/v1/marketplace/products/{product_id}                # Single product detail
+    ```
+
+    Product detail includes name, description, base price, available variants, addition groups, and availability status. Products marked `agotado` by kitchen staff are hidden or shown as unavailable.
+  </Step>
+  <Step title="Select Variants and Additions">
+    Each product may include one or more modifier groups — required choices (like size) or optional additions (like extra toppings). The customer's selections are captured in the order line items at checkout. Additions and variants are defined in the `options` module and are attached at the product level.
+  </Step>
+  <Step title="Build the Cart and Check Out">
+    Customers add items to their cart locally. When ready, they submit the order to one of two endpoints depending on authentication status:
+
+    **Guest checkout:**
+    ```http
+    POST /api/v1/orders/guest
+    ```
+
+    **Registered customer checkout:**
+    ```http
+    POST /api/v1/orders/customer
+    ```
+
+    The checkout payload includes the business/branch ID, selected products with variants/additions, delivery address, and payment method.
+  </Step>
+  <Step title="Track the Order">
+    After placing the order, customers track its progress in real time. Registered customers retrieve orders from their history; guests use their token.
+
+    **Registered customer:**
+    ```http
+    GET /api/v1/customer/orders              # Full order history
+    GET /api/v1/customer/orders/{order_id}   # Single order with current state
+    ```
+
+    **Guest order lookup (requires `X-Guest-Order-Token` header):**
+    ```http
+    GET /api/v1/customer/orders/{order_id}
+    X-Guest-Order-Token: <token_from_checkout_response>
+    ```
+
+    The order detail response includes the full state machine position, estimated time, and courier details once assigned.
+  </Step>
+</Steps>
+
+---
+
+## Guest Order Token
+
+When a guest completes checkout via `POST /api/v1/orders/guest`, the response includes an opaque token tied to that specific order. To read the order later, the guest must include this token in the `X-Guest-Order-Token` request header:
+
+```http
+GET /api/v1/customer/orders/{order_id}
+X-Guest-Order-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+Without this header, the endpoint returns `401 Unauthorized` for unauthenticated callers. Registered customers use their session token instead and do not need `X-Guest-Order-Token`.
+
+<Note>
+Guest tokens are single-order and do not grant access to any other endpoints. Store the token in the browser session or local storage immediately after the guest checkout response to ensure the customer can track their order.
+</Note>
+
+---
+
+## Saved Addresses
+
+Registered customers can manage a list of saved delivery addresses:
+
+```http
+GET    /api/v1/customer/addresses                       # List saved addresses
+POST   /api/v1/customer/addresses                       # Save a new address
+PUT    /api/v1/customer/addresses/{address_id}          # Update an address
+DELETE /api/v1/customer/addresses/{address_id}          # Remove an address
+POST   /api/v1/customer/addresses/{address_id}/default  # Set default address
+```
+
+The default address is pre-selected at checkout but can be overridden per order.
+
+---
+
+## Favorites
+
+Registered customers can save businesses they order from frequently:
+
+```http
+GET /api/v1/customer/favorites    # List favorited businesses
+```
+
+Favorites appear as a quick-access section at the top of the marketplace home view, reducing browse time for repeat orders.
+
+---
+
+## WhatsApp Ordering
+
+WhatsApp is a first-class ordering channel in Zippi. When a customer places an order through WhatsApp (via the support/bot integration), the order enters the **same state machine** as an app order. The channel origin (`app` vs. `whatsapp`) is recorded in the order audit trail, but no separate flow exists — the business, kitchen, and courier experience is identical.
+
+<Note>
+Orders placed via WhatsApp are typically created by the support agent or automated bot on behalf of the customer. The resulting order record is associated with the customer's profile and appears in their order history if they are a registered user.
+</Note>
+
+---
+
+## Customer Profile
+
+Registered customers can view and update their profile information:
+
+```http
+GET /api/v1/customer/profile       # View profile
+PUT /api/v1/customer/profile       # Update name, phone, preferences
+```
+
+---
+
+## Customer Support and Incidents
+
+Registered customers can raise incidents (complaints, missing items, delivery issues) directly from the order detail view. The `customer` role holds `incidents.read` and `incidents.manage` permissions, enabling them to create and track their own support cases.
+
+| Permission | What it enables |
+|-----------|-----------------|
+| `orders.read` | View own orders and order states |
+| `clients.read` | View own profile and address history |
+| `incidents.read` | View own open and resolved incidents |
+| `incidents.manage` | Open a new incident or respond to a support request |
+
+<Warning>
+The `customer` role does **not** have `orders.manage`. Customers can read their orders but cannot modify order state, reassign couriers, or perform any operator-level action. The only order-related write action available to customers is opening an incident.
+</Warning>
+
+---
+
+## Marketplace Home
+
+The customer app home screen provides a contextual entry point:
+
+```http
+GET /api/v1/customer/home    # Home feed (featured businesses, categories, offers)
+```
+
+This endpoint returns featured businesses, available categories, active promotions, and the customer's recent order history — all filtered to the customer's city context.

@@ -1,0 +1,225 @@
+---
+title: "Database Migrations with Flask-Migrate and Alembic"
+sidebarTitle: "Migrations"
+description: "Zippi uses Flask-Migrate (Alembic) for schema management. Create, apply, and roll back migrations against a MySQL 8 database."
+---
+
+Zippi manages all database schema changes through [Flask-Migrate](https://flask-migrate.readthedocs.io/), which wraps [Alembic](https://alembic.sqlalchemy.org/) and integrates it into the Flask CLI. Migration scripts live in `backend/migrations/versions/` and are version-controlled alongside application code. The database is MySQL 8 in production; the same workflow works with a local MySQL instance during development.
+
+## How the Migration Stack Is Wired
+
+Flask-Migrate is initialised in `backend/app/bootstrap/extensions.py`:
+
+```python
+from flask_migrate import Migrate
+from flask_sqlalchemy import SQLAlchemy
+from app.infrastructure.db.base import Base
+
+db = SQLAlchemy(metadata=Base.metadata, session_options={"autoflush": False})
+migrate = Migrate(compare_type=True, render_as_batch=True)
+```
+
+`compare_type=True` ensures that column type changes (e.g. `VARCHAR` length) are detected during autogeneration. `render_as_batch=True` enables Alembic's batch mode, which is required for certain `ALTER TABLE` operations on databases that don't support transactional DDL.
+
+The `create_app()` factory in `backend/app/bootstrap/app_factory.py` binds both extensions:
+
+```python
+db.init_app(app)
+migrate.init_app(app, db)
+```
+
+All SQLAlchemy models are imported via `app.infrastructure.db.models` before the app starts, so Alembic's autogenerate can diff the full metadata against the live schema.
+
+Alembic's runtime configuration — database URL resolution, metadata target, and the process-revision-directives hook — is defined in `backend/migrations/env.py`.
+
+<Note>
+  The migrations directory is `backend/migrations/versions/`, **not**
+  `backend/app/infrastructure/db/migrations/`. All `flask db` commands must be
+  run from the `backend/` directory with the virtual environment active.
+</Note>
+
+## Applying Existing Migrations
+
+Run all pending migrations against the database configured in `backend/.env`:
+
+```bash
+# From backend/ with the venv active
+python -m flask db upgrade
+```
+
+This brings the schema to the latest `head` revision. To upgrade to a specific revision instead:
+
+```bash
+python -m flask db upgrade <revision_id>
+```
+
+After applying migrations for the first time, seed the base data:
+
+```bash
+python scripts/seed_data.py
+```
+
+## Checking Migration Status
+
+Two commands help you understand the current schema state:
+
+```bash
+# Show the revision currently applied to the database
+python -m flask db current
+
+# Show the full migration history (latest first)
+python -m flask db history
+```
+
+Example `history` output (abbreviated from the actual `versions/` directory):
+
+```
+f6a7b8c9d012 -> (head) wompi_payment_transactions
+e5f6a7b8c901 -> f6a7b8c9d012 evidence_audit_snapshot
+d4e5f601a2b3 -> e5f6a7b8c901 fase16_admin_panel
+c3d4e5f601a2 -> d4e5f601a2b3 fase3_domiciliarios
+...
+4a1e9b7f6c21 (base) fase1_base_sistema
+```
+
+## Creating and Applying a New Migration
+
+<Steps>
+  <Step title="Define or update your SQLAlchemy model">
+    Add or modify a model class that inherits from `Base`
+    (`app.infrastructure.db.base.Base`). For example, adding a `notes` column
+    to an existing model:
+
+    ```python
+    from sqlalchemy.orm import Mapped, mapped_column
+    from sqlalchemy import Text
+    from app.infrastructure.db.base import Base
+
+    class Order(Base):
+        __tablename__ = "orders"
+        # ... existing columns ...
+        notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ```
+  </Step>
+
+  <Step title="Autogenerate the migration script">
+    Flask-Migrate diffs your model metadata against the live schema and writes
+    a new script into `backend/migrations/versions/`:
+
+    ```bash
+    python -m flask db migrate -m "add notes column to orders"
+    ```
+
+    A new file such as `migrations/versions/a1b2c3d4_add_notes_column_to_orders.py`
+    is created with `upgrade()` and `downgrade()` functions.
+  </Step>
+
+  <Step title="Review the generated script">
+    Always inspect the generated file before applying it. Autogenerate is not
+    perfect — it may miss table renames, partial indexes, or check constraints.
+
+    ```bash
+    # Open the newest file in versions/
+    ls -t migrations/versions/ | head -1
+    ```
+
+    A typical generated script looks like:
+
+    ```python
+    def upgrade():
+        op.add_column(
+            "orders",
+            sa.Column("notes", sa.Text(), nullable=True),
+        )
+
+    def downgrade():
+        op.drop_column("orders", "notes")
+    ```
+  </Step>
+
+  <Step title="Apply the migration">
+    ```bash
+    python -m flask db upgrade
+    ```
+
+    Alembic records the new revision in the `alembic_version` table so it is
+    not re-applied on subsequent runs.
+  </Step>
+</Steps>
+
+<Tip>
+  Always run and verify new migrations against a dedicated development database
+  (separate from the one you use for day-to-day work) before promoting to
+  staging. A simple workflow is to create a `zippi_db_test` schema, point
+  `DATABASE_URL` at it, and run the full `upgrade` → `downgrade` → `upgrade`
+  cycle to confirm the script is idempotent.
+</Tip>
+
+## Rolling Back Migrations
+
+Roll back one step (the most recently applied revision):
+
+```bash
+python -m flask db downgrade
+```
+
+Roll back to a specific revision:
+
+```bash
+python -m flask db downgrade <revision_id>
+```
+
+Roll back everything — return the schema to an empty state:
+
+```bash
+python -m flask db downgrade base
+```
+
+<Warning>
+  **Never modify a migration that has already been applied to production.**
+  Alembic tracks applied revisions by their script hash; altering a committed
+  migration script causes the hash to drift and will break future upgrade
+  chains. If you need to fix a migration, create a new one that applies the
+  corrective change.
+</Warning>
+
+## Multi-Tenant Considerations
+
+Zippi supports multi-branch and multi-tenant deployments. Every new entity table that belongs to a branch (`sucursal`) must include a `sucursal_id` discriminator column so that queries can be scoped without cross-contaminating data:
+
+```python
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Integer, ForeignKey
+
+class MyEntity(Base):
+    __tablename__ = "my_entity"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Tenant discriminator — required for branch-scoped tables
+    sucursal_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("sucursales.id"), nullable=False, index=True
+    )
+```
+
+When autogenerating migrations for multi-tenant tables, confirm that:
+
+1. The `sucursal_id` foreign key is present in the `upgrade()` function.
+2. A matching index is generated alongside it for query performance.
+3. The `downgrade()` function drops both the column and the index cleanly.
+
+## CI Integration
+
+The GitHub Actions CI pipeline (`ci.yml`) installs all backend dependencies and runs `pytest` on every push to `main`, `master`, and `develop`, and on all pull requests. Migrations themselves are not re-run in CI, but the test suite exercises the schema through SQLAlchemy models — meaning a broken migration that produces an inconsistent model will surface as a test failure before it reaches staging.
+
+```yaml
+# From .github/workflows/ci.yml (backend job, abbreviated)
+- name: Install dependencies
+  run: pip install -r requirements-dev.txt
+- name: Ruff
+  run: ruff check app tests
+- name: Bandit
+  run: bandit -r app -ll
+- name: Pytest
+  run: pytest tests/by_role tests/unit --cov=app --cov-report=term-missing --cov-fail-under=1
+```
+
+Pre-commit hooks (`.pre-commit-config.yaml`) run `ruff`, `ruff-format`, and a subset of the pytest suite on every local commit to `backend/`, catching issues before they reach the remote branch.

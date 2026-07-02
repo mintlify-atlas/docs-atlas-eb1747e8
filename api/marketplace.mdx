@@ -1,0 +1,437 @@
+---
+title: "Marketplace API: Public Business and Product Discovery"
+sidebarTitle: "Marketplace"
+description: "Public endpoints for browsing businesses, categories, and products in the Zippi marketplace. No authentication required — filtered by city."
+---
+
+The Zippi Marketplace API exposes a fully public surface for discovering businesses, browsing product catalogs, and reading product details — no API key or login is needed. All endpoints sit under the `/api/v1` prefix and return a consistent JSON envelope with `success`, `message`, and `data` fields. Prices are always expressed as integers representing centavos (Colombian pesos × 100).
+
+---
+
+## List Business Categories
+
+Returns the full list of active top-level categories used to organise businesses in the marketplace (e.g. *Comidas*, *Tiendas*, *Farmacias*).
+
+**`GET /api/v1/business-categories`**
+
+No query parameters. No authentication required.
+
+```bash cURL
+curl https://api.zippi.app/api/v1/business-categories
+```
+
+### Response
+
+```json Example response
+{
+  "success": true,
+  "message": "OK",
+  "data": [
+    {
+      "id": "cat-food",
+      "name": "Comidas",
+      "icon": "🍔",
+      "active": true
+    },
+    {
+      "id": "cat-store",
+      "name": "Tiendas",
+      "icon": "🛒",
+      "active": true
+    }
+  ]
+}
+```
+
+<ResponseField name="data" type="array">
+  List of category objects.
+
+  <ResponseField name="data[].id" type="string">
+    Slug identifier for the category (e.g. `cat-food`). Use this value in the
+    `category` filter on `GET /marketplace/businesses`.
+  </ResponseField>
+
+  <ResponseField name="data[].name" type="string">
+    Human-readable category name.
+  </ResponseField>
+
+  <ResponseField name="data[].icon" type="string">
+    Emoji icon for UI display.
+  </ResponseField>
+
+  <ResponseField name="data[].active" type="boolean">
+    Whether the category is currently visible to customers.
+  </ResponseField>
+</ResponseField>
+
+---
+
+## List Businesses
+
+Returns all active, currently-operating business branches in the marketplace. Results can be filtered, searched, and sorted client-side via query parameters.
+
+**`GET /api/v1/marketplace/businesses`**
+
+No authentication required.
+
+### Query Parameters
+
+<ParamField query="q" type="string">
+  Full-text search across business name, description, category name, and tags.
+  Case-insensitive partial match.
+</ParamField>
+
+<ParamField query="category" type="string">
+  Filter by category ID (e.g. `cat-food`) or category slug. Pass `todos` to
+  return all categories.
+</ParamField>
+
+<ParamField query="open_now" type="boolean">
+  When `true` (also accepted as `openNow=true` or `open_now=1`), only businesses
+  whose branch `estado` is `OPERANDO` are returned.
+</ParamField>
+
+<ParamField query="sort" type="string">
+  Sort order for results. Accepted values:
+
+  - `rating` — highest rated first
+  - `time` — fastest estimated delivery first
+  - `fee` — lowest delivery fee first
+
+  Omit for default alphabetical ordering.
+</ParamField>
+
+```bash cURL — open food businesses, sorted by rating
+curl "https://api.zippi.app/api/v1/marketplace/businesses?category=cat-food&open_now=true&sort=rating"
+```
+
+### Response
+
+<ResponseField name="data" type="array">
+  Ordered array of business-branch cards.
+
+  <ResponseField name="data[].id" type="string">
+    Composite business reference in the format `biz-{businessId}-branch-{branchId}`.
+    Pass this value as `business_ref` to the products endpoint.
+  </ResponseField>
+
+  <ResponseField name="data[].name" type="string">
+    Display name of the branch.
+  </ResponseField>
+
+  <ResponseField name="data[].slug" type="string">
+    URL-safe slug derived from the branch name. Can be used in place of `id`
+    on the detail endpoint.
+  </ResponseField>
+
+  <ResponseField name="data[].businessType" type="string">
+    Internal business type key (e.g. `restaurante`, `tienda`, `farmacia`).
+  </ResponseField>
+
+  <ResponseField name="data[].categoryId" type="string">
+    Category identifier matching the categories list.
+  </ResponseField>
+
+  <ResponseField name="data[].categoryName" type="string">
+    Human-readable category name.
+  </ResponseField>
+
+  <ResponseField name="data[].description" type="string">
+    Short business description.
+  </ResponseField>
+
+  <ResponseField name="data[].rating" type="number">
+    Average customer rating (0–5).
+  </ResponseField>
+
+  <ResponseField name="data[].deliveryTimeMin" type="integer">
+    Minimum estimated delivery time in minutes.
+  </ResponseField>
+
+  <ResponseField name="data[].deliveryTimeMax" type="integer">
+    Maximum estimated delivery time in minutes.
+  </ResponseField>
+
+  <ResponseField name="data[].deliveryFee" type="integer">
+    Delivery fee in centavos (integer).
+  </ResponseField>
+
+  <ResponseField name="data[].serviceFee" type="integer">
+    Platform service fee in centavos (integer).
+  </ResponseField>
+
+  <ResponseField name="data[].isOpen" type="boolean">
+    Whether the branch is currently accepting orders.
+  </ResponseField>
+
+  <ResponseField name="data[].image" type="string">
+    URL of the business cover image.
+  </ResponseField>
+
+  <ResponseField name="data[].logo" type="string">
+    Two-letter monogram used as a fallback logo in the UI.
+  </ResponseField>
+
+  <ResponseField name="data[].neighborhood" type="string">
+    City or neighbourhood the branch serves.
+  </ResponseField>
+
+  <ResponseField name="data[].address" type="string">
+    Street address of the branch.
+  </ResponseField>
+
+  <ResponseField name="data[].phone" type="string">
+    Contact phone number.
+  </ResponseField>
+
+  <ResponseField name="data[].featured" type="boolean">
+    Whether the branch is featured in the homepage carousel (first 3 results).
+  </ResponseField>
+
+  <ResponseField name="data[].popular" type="boolean">
+    Whether the branch is promoted as popular (first 6 results).
+  </ResponseField>
+
+  <ResponseField name="data[].businessId" type="integer">
+    Internal numeric ID of the parent business entity.
+  </ResponseField>
+
+  <ResponseField name="data[].branchId" type="integer">
+    Internal numeric ID of this branch.
+  </ResponseField>
+</ResponseField>
+
+<Note>
+  Prices (`deliveryFee`, `serviceFee`) are returned as **integer centavos**.
+  Divide by 100 to display in Colombian pesos (COP). For example, `3500` = $35.00 COP.
+</Note>
+
+---
+
+## Get Business Detail
+
+Returns full detail for a single business branch, including operating hours and branch metadata.
+
+**`GET /api/v1/marketplace/businesses/:slug`**
+
+No authentication required. The `:slug` path segment accepts either the URL slug
+(e.g. `pizza-express`) or the composite `id` string (`biz-12-branch-5`).
+
+### Path Parameters
+
+<ParamField path="slug" type="string" required>
+  The branch slug or composite `biz-{businessId}-branch-{branchId}` identifier.
+</ParamField>
+
+```bash cURL
+curl https://api.zippi.app/api/v1/marketplace/businesses/pizza-express
+```
+
+### Response
+
+Returns the same business card object as described in the [List Businesses](#list-businesses)
+response, plus the following additional fields:
+
+<ResponseField name="data.schedule" type="string">
+  Operating hours description (e.g. `Lun–Sáb 10:00–22:00`).
+</ResponseField>
+
+<ResponseField name="data.whatsapp" type="string">
+  WhatsApp-ready phone number including country code prefix (e.g. `573001234567`).
+</ResponseField>
+
+<ResponseField name="data.tags" type="array of strings">
+  Category and feature tags for the business.
+</ResponseField>
+
+Returns **404** if no active, operating branch matches the slug.
+
+---
+
+## Get Business Product Catalog
+
+Returns all active products for a business branch, grouped by product category.
+
+**`GET /api/v1/marketplace/businesses/:business_ref/products`**
+
+No authentication required.
+
+### Path Parameters
+
+<ParamField path="business_ref" type="string" required>
+  Accepts any of the following forms:
+
+  - Composite ref: `biz-{businessId}-branch-{branchId}` (e.g. `biz-12-branch-5`)
+  - Numeric branch ID (e.g. `5`)
+  - Branch slug (e.g. `pizza-express`)
+</ParamField>
+
+```bash cURL
+curl https://api.zippi.app/api/v1/marketplace/businesses/biz-12-branch-5/products
+```
+
+### Response
+
+<ResponseField name="data.categories" type="array">
+  Ordered list of distinct product categories present in this catalog.
+
+  <ResponseField name="data.categories[].id" type="string">
+    Slugified category name (e.g. `entradas`).
+  </ResponseField>
+
+  <ResponseField name="data.categories[].name" type="string">
+    Human-readable category label (e.g. `Entradas`).
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="data.products" type="array">
+  Flat list of all active products, sorted alphabetically by name.
+
+  <ResponseField name="data.products[].id" type="string">
+    Product reference in the format `prod-{id}`. Use this value as `productId`
+    when placing an order.
+  </ResponseField>
+
+  <ResponseField name="data.products[].businessId" type="string">
+    Composite business reference (`biz-{businessId}-branch-{branchId}`).
+  </ResponseField>
+
+  <ResponseField name="data.products[].categoryId" type="string">
+    Category identifier this product belongs to.
+  </ResponseField>
+
+  <ResponseField name="data.products[].categoryName" type="string">
+    Human-readable category name for grouping in the UI.
+  </ResponseField>
+
+  <ResponseField name="data.products[].name" type="string">
+    Product name.
+  </ResponseField>
+
+  <ResponseField name="data.products[].description" type="string">
+    Product description (may be empty string).
+  </ResponseField>
+
+  <ResponseField name="data.products[].price" type="integer">
+    Unit price in centavos (integer). See note below.
+  </ResponseField>
+
+  <ResponseField name="data.products[].image" type="string">
+    URL of the product image (may be empty string).
+  </ResponseField>
+
+  <ResponseField name="data.products[].tags" type="array of strings">
+    Searchable tags, derived from the product's category.
+  </ResponseField>
+
+  <ResponseField name="data.products[].isAvailable" type="boolean">
+    Whether the product is currently available for ordering.
+  </ResponseField>
+
+  <ResponseField name="data.products[].stock" type="integer">
+    Available stock quantity. Returns `99` when stock is not tracked.
+  </ResponseField>
+
+  <ResponseField name="data.products[].optionGroups" type="array">
+    Option groups (e.g. size, temperature). Currently returns an empty array;
+    options are a planned extension.
+  </ResponseField>
+
+  <ResponseField name="data.products[].additionGroups" type="array">
+    Addition groups (e.g. toppings, extras). Currently returns an empty array;
+    additions are a planned extension.
+  </ResponseField>
+</ResponseField>
+
+<Note>
+  All `price` values in product responses are **integer centavos**. A product
+  priced at `8500` costs $85.00 COP. Never use client-submitted prices in orders
+  — the server always recalculates totals from the catalog.
+</Note>
+
+```json Example response
+{
+  "success": true,
+  "message": "OK",
+  "data": {
+    "categories": [
+      { "id": "hamburguesas", "name": "Hamburguesas" },
+      { "id": "bebidas", "name": "Bebidas" }
+    ],
+    "products": [
+      {
+        "id": "prod-101",
+        "businessId": "biz-12-branch-5",
+        "categoryId": "cat-food",
+        "categoryName": "Hamburguesas",
+        "name": "Hamburguesa Clásica",
+        "description": "Carne de res, lechuga, tomate y salsa especial.",
+        "price": 14000,
+        "image": "",
+        "tags": ["hamburguesas"],
+        "isAvailable": true,
+        "stock": 99,
+        "optionGroups": [],
+        "additionGroups": []
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Get Product Detail
+
+Returns full detail for a single product, including its option and addition groups.
+
+**`GET /api/v1/marketplace/products/:product_id`**
+
+No authentication required.
+
+### Path Parameters
+
+<ParamField path="product_id" type="string" required>
+  The product reference. Accepts either `prod-{id}` format (e.g. `prod-101`) or
+  a bare numeric ID (e.g. `101`).
+</ParamField>
+
+```bash cURL
+curl https://api.zippi.app/api/v1/marketplace/products/prod-101
+```
+
+### Response
+
+Returns a single product object with the same fields described in the
+[catalog response](#get-business-product-catalog), directly under `data`.
+
+```json Example response
+{
+  "success": true,
+  "message": "OK",
+  "data": {
+    "id": "prod-101",
+    "businessId": "biz-12",
+    "categoryId": "cat-food",
+    "categoryName": "Hamburguesas",
+    "name": "Hamburguesa Clásica",
+    "description": "Carne de res, lechuga, tomate y salsa especial.",
+    "price": 14000,
+    "image": "",
+    "tags": ["hamburguesas"],
+    "isAvailable": true,
+    "stock": 99,
+    "optionGroups": [],
+    "additionGroups": []
+  }
+}
+```
+
+Returns **404** with `{"success": false, "message": "Producto no encontrado"}` when the product
+ID is not found or the product is inactive.
+
+<Note>
+  Prices (`price`) are always **integer centavos**. Divide by 100 for display.
+  Only products with `isAvailable: true` can be added to an order — the server
+  rejects items for inactive or non-existent products at checkout.
+</Note>

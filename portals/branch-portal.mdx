@@ -1,0 +1,235 @@
+---
+title: "Branch Portal: Operative Roles at the Business Location"
+sidebarTitle: "Branch Portal"
+description: "The Branch Portal tailors the experience for kitchen_staff, cashier, waiter, and business_branch_admin — each role sees only its operational screen."
+---
+
+The Branch Portal serves the staff who physically operate a business location. Rather than a generic dashboard, each role enters directly into their specific work screen — the comanda queue, the cash register, the table map, or the branch overview. The portal surface is `business_branch_portal` at `/app/business/branch`, shared by all four operative roles but rendered differently for each.
+
+Every role in the Branch Portal has scope `business_branch`, meaning they see only the data belonging to their assigned location.
+
+---
+
+## The Four Branch Roles
+
+| Role | Screen | Scope | Home Route |
+|------|--------|-------|------------|
+| `kitchen_staff` | Comanda queue | `business_branch` | `/app/business/branch` |
+| `cashier` | Shift and cash register | `business_branch` | `/app/business/branch` |
+| `waiter` | Table map and comanda | `business_branch` | `/app/business/branch` |
+| `business_branch_admin` | Full branch overview | `business_branch` | `/app/business/branch` |
+
+---
+
+## Role Screens and Permissions
+
+<Tabs>
+  <Tab title="Kitchen Staff">
+    Kitchen staff enter directly into the comanda queue — no dashboard, no analytics, no financial data. Their entire workflow is about receiving orders, advancing preparation state, and flagging stock issues.
+
+    ### Comanda Queue
+
+    The queue is sorted by priority (determined by the system based on SLA and wait time, not arrival order) and displays a countdown timer for each order. When an order exceeds its SLA threshold, the card turns red with an alert indicator.
+
+    ```
+    PEDIDO 451   ⏱ 03:42   🔴 URGENTE
+      Hamburguesa x1
+      Papas x1
+      Coca-Cola x1
+      [Preparando]  [Empacado]
+    ```
+
+    ### State Transitions
+
+    Kitchen staff can move orders through the preparation states:
+
+    - `Esperando preparación` → `Preparando` — triggered by `orders.prepare`
+    - `Preparando` → `Empacado` — triggered by `orders.pack`
+
+    ### Marking Products as Agotado
+
+    When an ingredient runs out, kitchen staff mark a product unavailable using `catalog.edit_availability`. This immediately removes the product from the marketplace for that branch, preventing new orders from including it.
+
+    ### Permissions
+
+    ```python
+    OPERATIVE_ROLE_PERMISSIONS["kitchen_staff"] = [
+        "orders.read",
+        "orders.prepare",
+        "orders.pack",
+        "kitchen.read",
+        "kitchen.manage",
+        "catalog.read",
+        "catalog.edit_availability",
+    ]
+    ```
+
+    <Warning>
+      Kitchen staff cannot see prices, costs, payment amounts, or any financial data. The `cashier`, `payments`, and `liquidations` permission groups are entirely absent from this role. Never display financial totals on the kitchen screen.
+    </Warning>
+  </Tab>
+
+  <Tab title="Cashier">
+    The cashier role is entirely focused on money flow: opening a shift, recording payments, reconciling the register, and closing out the day. The screen shows cash-in vs. cash-expected at all times.
+
+    ### Shift Lifecycle
+
+    ```
+    Cashier opens shift (cashier.open)
+      → Records payments during the shift (orders.collect_payment)
+      → Reconciles pending Nequi / transfer / efectivo (cashier.reconcile)
+      → Runs arqueo (counts physical cash)
+      → Closes shift (cashier.close) — system calculates difference
+    ```
+
+    ### Cash Register View
+
+    ```
+    Caja: ABIERTA  (turno 14:00)
+    Esperado: $480.000   Recibido: $475.000   Diferencia: -$5.000
+    Pendientes: Nequi (2)  Transferencia (1)  Efectivo (3)
+    [Registrar pago] [Arqueo] [Cerrar turno]
+    ```
+
+    Payment methods tracked: `efectivo`, `Nequi`, `transferencia`. Any discrepancy between expected and received amounts must be justified and is recorded in the audit trail. Closing a shift that is already closed is a no-op (idempotent).
+
+    ### Cashier Module Endpoints
+
+    ```http
+    GET  /api/v1/cashier/overview
+    GET  /api/v1/cashier/shifts
+    POST /api/v1/cashier/shifts                         # Open shift (cashier.reconcile)
+    GET  /api/v1/cashier/shifts/{shift_id}
+    POST /api/v1/cashier/shifts/{shift_id}/base         # Register initial base
+    GET  /api/v1/cashier/shifts/{shift_id}/movements
+    POST /api/v1/cashier/shifts/{shift_id}/movements
+    GET  /api/v1/cashier/shifts/{shift_id}/summary
+    POST /api/v1/cashier/shifts/{shift_id}/close        # Arqueo and close
+    GET  /api/v1/cashier/shifts/{shift_id}/liquidation
+    ```
+
+    ### Permissions
+
+    ```python
+    OPERATIVE_ROLE_PERMISSIONS["cashier"] = [
+        "orders.read",
+        "orders.close",
+        "orders.collect_payment",
+        "cashier.read",
+        "cashier.reconcile",
+        "cashier.open",
+        "cashier.close",
+        "payments.read",
+        "reports.read",
+    ]
+    ```
+  </Tab>
+
+  <Tab title="Waiter">
+    The waiter's primary view is the table map — a live floor plan showing every table's current state. From here they manage the full dine-in experience: opening tables, taking orders, coordinating with the kitchen, and requesting the cashier for payment.
+
+    ### Table Map
+
+    Tables display state at a glance: **Libre** (free), **Ocupada** (occupied), or **Por cobrar** (awaiting payment). Tapping a table opens its detail with the full comanda and available actions.
+
+    ```
+    Mesa 4  • Ocupada • 3 personas • 00:42
+      2x Hamburguesa, 1x Limonada
+      [Enviar a cocina] [Agregar] [Mover] [Pedir cuenta]
+    ```
+
+    ### Waiter Actions
+
+    - **Abrir mesa** — opens a table and starts a comanda
+    - **Tomar comanda** — adds items to the table's order
+    - **Enviar a cocina** — sends the comanda to the kitchen queue (`orders.accept`)
+    - **Mover mesa** — reassigns a table's comanda to a different table number
+    - **Unir mesas** — merges two tables into a single order
+    - **Separar cuenta** — splits the bill across multiple payment requests
+    - **Solicitar caja** — requests the cashier to close and charge the table
+    - **Rechazar pedido** — rejects an order if needed (`orders.reject`)
+
+    ### Permissions
+
+    ```python
+    OPERATIVE_ROLE_PERMISSIONS["waiter"] = [
+        "orders.read",
+        "orders.accept",
+        "orders.reject",
+        "waiter.read",
+        "waiter.manage",
+        "kitchen.read",
+        "cashier.read",
+    ]
+    ```
+
+    <Note>
+    Waiters hold `cashier.read` so they can see table payment status and request the cashier, but they cannot open or close shifts, reconcile payments, or view financial reports. They also have no access to the catalog for price editing.
+    </Note>
+  </Tab>
+
+  <Tab title="Branch Admin">
+    The `business_branch_admin` orchestrates all branch operations from a unified panel. They see the kitchen queue, the cashier status, the table floor, and branch-level configuration in one place — effectively combining the views of the other three roles with the added authority to configure the branch itself.
+
+    ### What the Branch Admin Controls
+
+    - **Orders** — full order management within the branch: accept, reject, prepare, pack, close, collect payment, and cancel
+    - **Kitchen** — comanda queue oversight with the ability to intervene on any order
+    - **Cashier** — shift management, payment reconciliation, and arqueo
+    - **Waiter** — table map and floor management
+    - **Catalog** — product availability, local catalog edits, and option management
+    - **Payments** — payment record visibility for the branch
+    - **Incidents** — incident creation and management for the branch
+    - **Reports** — operational and payment reports scoped to the branch
+
+    ### Modules
+
+    The `business_branch_admin` accesses `BUSINESS_BRANCH_MODULES`:
+
+    ```python
+    BUSINESS_BRANCH_MODULES = [
+        "business_branch_portal",
+        "orders",
+        "kitchen",
+        "cashier",
+        "waiter",
+        "catalog",
+        "product_options",
+        "payments",
+        "support",
+        "reports",
+    ]
+    ```
+
+    ### Permissions
+
+    The `business_branch_admin` holds permissions across `dashboard`, `business_branches`, `catalog`, `orders`, `kitchen`, `cashier`, `waiter`, `payments`, `incidents`, and `reports` — but **not** `liquidations` (that remains at the business group or brand level) and **not** `coupons`.
+
+    <Tip>
+    If you need someone to configure branch-level settings (schedule, pause, staff) without access to cashier reconciliation or catalog pricing, consider whether `business_branch_admin` is the right role or whether a more restricted custom configuration is needed. As defined, the branch admin has broad local authority.
+    </Tip>
+  </Tab>
+</Tabs>
+
+---
+
+## Branch Portal Module List
+
+The `BUSINESS_BRANCH_MODULES` set defines exactly what the branch portal exposes:
+
+```python
+BUSINESS_BRANCH_MODULES = [
+    "business_branch_portal",
+    "orders",
+    "kitchen",
+    "cashier",
+    "waiter",
+    "catalog",
+    "product_options",
+    "payments",
+    "support",
+    "reports",
+]
+```
+
+Modules outside this list — `liquidations`, `analytics`, `team`, `business_groups`, `zones`, `dispatch`, `couriers` — are never shown in the Branch Portal, regardless of any other configuration.

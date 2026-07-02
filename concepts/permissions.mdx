@@ -1,0 +1,281 @@
+---
+title: "Permission Model and RBAC in Zippi"
+sidebarTitle: "Permissions"
+description: "Zippi uses action-level permissions beyond module access. catalog.manage implies fine-grained catalog actions; order transitions each require their own permission."
+---
+
+Zippi's permission model goes beyond coarse module-level gates. For sensitive operations — editing a product price, closing a cashier shift, refunding an order — there are dedicated fine-grained action permissions that must be checked explicitly. The backend is the authority; the frontend only mirrors permissions for rendering decisions and must never be trusted as the sole gatekeeper.
+
+## Permission Structure
+
+Every permission follows the pattern `<module>.<action>`. All permissions are registered in the `PERMISSIONS` dictionary in `backend/app/modules/auth/domain/rbac.py`. The source file is the **single source of truth** — never infer permissions from a role's label or from the frontend.
+
+Most modules expose at least two permissions:
+
+| Permission | Meaning |
+|-----------|---------|
+| `<module>.read` | View or list resources in this module |
+| `<module>.manage` | Create, edit, or delete resources in this module |
+
+Examples: `orders.read`, `orders.manage`, `catalog.read`, `catalog.manage`, `cashier.read`, `cashier.reconcile`, `liquidations.read`, `liquidations.manage`.
+
+## Umbrella vs. Fine-Grained Permissions
+
+Some module-level `manage` permissions are **umbrella** permissions: they imply a set of finer-grained action permissions. Others are standalone and do not carry such implications.
+
+### Umbrella permission: `catalog.manage`
+
+`catalog.manage` expands to all `catalog.*` action permissions. When a role has `catalog.manage`, calling `expand_permissions()` adds every fine-grained catalog action:
+
+```python
+CATALOG_ACTION_PERMISSIONS = frozenset(
+    permission
+    for permission in PERMISSIONS
+    if permission.startswith("catalog.") and permission != "catalog.manage"
+)
+
+IMPLIED_PERMISSIONS: dict[str, frozenset[str]] = {
+    "catalog.manage": CATALOG_ACTION_PERMISSIONS,
+}
+```
+
+The full set of catalog action permissions defined in `rbac.py`:
+
+| Permission | Description |
+|-----------|-------------|
+| `catalog.create` | Create a product in the catalog |
+| `catalog.edit_name` | Edit a product's name |
+| `catalog.edit_price` | Edit a product's sale price |
+| `catalog.edit_cost` | Edit a product's cost |
+| `catalog.edit_taxes` | Edit a product's taxes |
+| `catalog.edit_image` | Edit a product's image |
+| `catalog.edit_availability` | Mark a product as sold out or available |
+| `catalog.duplicate` | Duplicate a product |
+| `catalog.archive` | Archive a product |
+| `catalog.delete` | Logically delete a product |
+| `catalog.restore` | Restore an archived product |
+| `catalog.export` | Export the catalog |
+| `catalog.import` | Import catalog data |
+| `catalog.change_category` | Change a product's category |
+| `catalog.move_branch` | Move a product between branches |
+| `catalog.change_supplier` | Change a product's supplier |
+| `catalog.assign_promotions` | Assign promotions to a product |
+
+### Fine-grained order permissions (no umbrella expansion)
+
+Order transition permissions are **standalone** — `orders.manage` does **not** imply them. Each transition requires its own explicit permission check:
+
+| Permission | Description |
+|-----------|-------------|
+| `orders.accept` | Accept a pending order |
+| `orders.reject` | Reject a pending order |
+| `orders.prepare` | Mark order as in preparation |
+| `orders.pack` | Mark order as packed |
+| `orders.assign_courier` | Assign a courier to the order |
+| `orders.pickup` | Mark order as picked up |
+| `orders.transit` | Mark order as en route |
+| `orders.deliver` | Mark order as delivered |
+| `orders.close` | Close a delivered order |
+| `orders.cancel` | Cancel an order |
+| `orders.refund` | Refund an order |
+| `orders.reschedule` | Reschedule an order |
+| `orders.mark_failed` | Mark an order as failed |
+| `orders.mark_absent` | Mark a customer as absent |
+| `orders.return` | Mark an order as returned |
+| `orders.collect_payment` | Register payment collection for an order |
+
+### Fine-grained cashier permissions
+
+| Permission | Description |
+|-----------|-------------|
+| `cashier.open` | Open a cashier shift |
+| `cashier.close` | Close a cashier shift (arqueo) |
+| `cashier.reconcile` | Reconcile cash, collections, and Wompi |
+
+## Operative Role Permissions
+
+The four operative roles (kitchen, cashier, waiter, driver) have tightly constrained permission sets defined in `OPERATIVE_ROLE_PERMISSIONS` in `rbac.py`. These are intentionally narrow — each role can do exactly what its job requires and nothing more.
+
+<AccordionGroup>
+  <Accordion title="kitchen_staff — Cocina">
+    The kitchen role can advance order preparation and mark products as unavailable. It has no access to financial data, admin functions, or liquidations.
+
+    ```python
+    OPERATIVE_ROLE_PERMISSIONS["kitchen_staff"] = [
+        "orders.read",
+        "orders.prepare",
+        "orders.pack",
+        "kitchen.read",
+        "kitchen.manage",
+        "catalog.read",
+        "catalog.edit_availability",
+    ]
+    ```
+
+    **Can:** Receive command tickets, advance preparation (`Esperando preparación → Preparando → Empacado`), mark products as sold out.
+
+    **Cannot:** Access cashier or payments, view liquidations, manage admin users, or see analytical dashboards.
+  </Accordion>
+
+  <Accordion title="waiter — Mesero">
+    The waiter role manages table-side order intake, communicates with the kitchen, and interfaces with the cashier for payment. It cannot see financial totals or manage the catalog.
+
+    ```python
+    OPERATIVE_ROLE_PERMISSIONS["waiter"] = [
+        "orders.read",
+        "orders.accept",
+        "orders.reject",
+        "waiter.read",
+        "waiter.manage",
+        "kitchen.read",
+        "cashier.read",
+    ]
+    ```
+
+    **Can:** Accept or reject incoming orders (`Pendiente aceptación → Aceptado/Cancelado`), manage tables and commands, view kitchen state, read cashier information.
+
+    **Cannot:** Close the cashier shift, view payment reconciliation, manage catalog prices, or access liquidations.
+  </Accordion>
+
+  <Accordion title="cashier — Cajero">
+    The cashier role owns the full till lifecycle: opening the shift, registering payments, performing the arqueo, and closing the shift. It reads orders for payment context but does not advance delivery states.
+
+    ```python
+    OPERATIVE_ROLE_PERMISSIONS["cashier"] = [
+        "orders.read",
+        "orders.close",
+        "orders.collect_payment",
+        "cashier.read",
+        "cashier.reconcile",
+        "cashier.open",
+        "cashier.close",
+        "payments.read",
+        "reports.read",
+    ]
+    ```
+
+    **Can:** Open and close shifts, collect order payments, reconcile cash vs. Wompi, read payment records, read reports.
+
+    **Cannot:** Advance kitchen preparation states, manage the catalog, view courier fleet, or manage liquidations.
+  </Accordion>
+
+  <Accordion title="delivery_driver — Domiciliario">
+    The driver role can only interact with their own assigned deliveries. Scope type is `self`. Evidence upload and incident reporting are included.
+
+    ```python
+    OPERATIVE_ROLE_PERMISSIONS["delivery_driver"] = [
+        "orders.read",
+        "orders.pickup",
+        "orders.transit",
+        "orders.deliver",
+        "orders.mark_failed",
+        "orders.mark_absent",
+        "couriers.read",
+        "evidence.read",
+        "evidence.manage",
+        "incidents.read",
+    ]
+    ```
+
+    **Can:** Pick up orders, mark them as in-transit, delivered, failed, or absent; upload evidence photos; report incidents; view their own courier profile.
+
+    **Cannot:** See orders belonging to other drivers or other businesses, access cashier, manage catalog, or view liquidations.
+  </Accordion>
+</AccordionGroup>
+
+## Implied Permission Expansion
+
+`expand_permissions()` takes a list of permissions and adds all implied (child) permissions before the final set is returned. This is called at JWT construction time and again at every permission check.
+
+```python
+def expand_permissions(permissions: list[str] | set[str]) -> list[str]:
+    expanded = set(permissions)
+    for umbrella, implied in IMPLIED_PERMISSIONS.items():
+        if umbrella in expanded:
+            expanded.update(implied)
+    return sorted(expanded)
+```
+
+Currently only `catalog.manage` triggers expansion. Any new umbrella→children relationship must be added to `IMPLIED_PERMISSIONS`.
+
+## Checking a Permission at Runtime
+
+Use `has_expanded_permission()` to check whether a user has a specific permission after expansion:
+
+```python
+def has_expanded_permission(user: dict | None, permission: str) -> bool:
+    if not user:
+        return False
+    return permission in set(expand_permissions(list(user.get("permissions") or [])))
+```
+
+In Flask route handlers, use the `require_permission` decorator from `backend/app/modules/auth/presentation/guards.py`:
+
+```python
+from app.modules.auth.presentation.guards import require_permission
+
+@bp.route("/catalog/products/<int:pid>/price", methods=["PATCH"])
+@require_permission("catalog.edit_price")
+def update_price(pid: int):
+    user = get_current_user()
+    scope = business_scope_from_user(user)
+    # ... business logic
+```
+
+For endpoints that accept multiple alternative permissions:
+
+```python
+from app.modules.auth.presentation.guards import require_any_permission
+
+@bp.route("/orders/<int:oid>/accept", methods=["POST"])
+@require_any_permission("orders.accept", "orders.manage")
+def accept_order(oid: int):
+    ...
+```
+
+## The FE↔BE Coherence Rule
+
+The frontend uses permissions exclusively for **rendering decisions** — showing or hiding buttons, links, and UI sections. It does not enforce security. The backend re-validates every request regardless of what the frontend claims.
+
+| Rule | Consequence of violation |
+|------|--------------------------|
+| Permission exists in FE but not in BE | **Vulnerability** — user can see UI but API still denies |
+| Permission exists in BE but not in FE | Hidden feature — no security issue, but poor UX |
+| `rbac.py` changed without updating `permissions.ts` | FE/BE desync — UI may show/hide incorrectly |
+| `rbac.py` changed without updating `tests/by_role/` | Silent regression — permissions appear correct but are untested |
+
+The synchronization chain when adding or changing a permission:
+
+```text
+1. backend/app/modules/auth/domain/rbac.py   ← source of truth
+2. backend/app/modules/business/security/business_permissions.py   ← if portal-gated
+3. Endpoint guard (require_permission / require_any_permission)
+4. frontend/src/modules/business/permissions.ts   ← FE mirror
+5. backend/tests/by_role/<role>/test_access.py    ← can / cannot assertions
+6. pytest tests/by_role -q   ← must be green before merging
+```
+
+## Fail-Closed Default
+
+When a role or permission is not found, the system denies by default. There is no fallthrough that grants access on an unknown role:
+
+```python
+def can(role: str, permission: str) -> bool:
+    definition = ROLE_DEFINITIONS.get(role)
+    if definition is None:
+        return False          # unknown role → deny
+    return permission in definition["permissions"]
+```
+
+This applies at every layer: unknown roles, missing permissions, missing scope — all result in denial (`403` or `404`), never in silent grant.
+
+## Notable Permission Caveats
+
+| Assumption | Reality |
+|-----------|---------|
+| `kitchen_staff` does not have `orders.manage` | **Wrong** — kitchen needs `orders.manage` to advance preparation |
+| `customer` has `orders.manage` to track their order | **Wrong** — customer has only `orders.read`; they cannot transition states |
+| `support_agent` can access cashier/payments | **Wrong** — support has no `cashier`, `payments`, or `liquidations` permissions |
+| `operations_admin` handles financial reconciliation | **Wrong** — operations has no `cashier`, `payments`, or `liquidations` permissions |
+
+Always check `rbac.py` directly. Never infer permissions from a role's label.

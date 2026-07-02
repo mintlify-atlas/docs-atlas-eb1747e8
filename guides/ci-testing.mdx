@@ -1,0 +1,169 @@
+---
+title: "CI Pipeline and Testing Strategy"
+sidebarTitle: "CI & Testing"
+description: "GitHub Actions runs ruff linting, bandit security checks, pytest contract and unit tests, and TypeScript build verification on every push and PR."
+---
+
+Zippi uses GitHub Actions for continuous integration, with separate jobs for the Python backend and the TypeScript/React frontend. Every push to `main`, `master`, or `develop`, and every pull request, triggers the full pipeline. Pre-commit hooks enforce the same linting and a fast smoke test locally before code ever reaches the remote.
+
+## CI Pipeline Overview
+
+The pipeline is defined in `.github/workflows/ci.yml` and runs two parallel jobs:
+
+```yaml
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+```
+
+### Backend Job
+
+Runs on `ubuntu-latest` with Python 3.12, working directory `backend/`:
+
+| Step | Command | Purpose |
+|---|---|---|
+| Install deps | `pip install -r requirements-dev.txt` | Install app + test dependencies |
+| Lint | `ruff check app tests` | Style, import order, unused variables |
+| Security scan | `bandit -r app -ll` | Detect low-severity-and-above security issues |
+| Tests + coverage | `pytest tests/by_role tests/unit --cov=app --cov-report=term-missing --cov-fail-under=1` | Run all contract and unit tests |
+
+### Frontend Job
+
+Runs on `ubuntu-latest` with Node 20, working directory `frontend/`:
+
+| Step | Command | Purpose |
+|---|---|---|
+| Install | `npm ci` | Reproducible install from lockfile |
+| Build | `npm run build` | Vite production build — fails on TypeScript and bundle errors |
+| Type check | `npx tsc --noEmit` | Full TypeScript type verification |
+| E2E smoke | `npm run test:e2e` | Playwright Chromium smoke tests |
+
+## Running Tests Locally
+
+```bash
+# All backend tests
+pytest backend/tests/
+
+# Only by-role contract tests (fastest feedback on RBAC changes)
+pytest backend/tests/by_role/
+
+# Only unit tests
+pytest backend/tests/unit/
+
+# With coverage report
+pytest backend/tests/by_role backend/tests/unit \
+  --cov=app --cov-report=term-missing
+
+# Frontend build verification
+cd frontend && npm run build
+
+# Frontend type check only
+cd frontend && npx tsc --noEmit
+```
+
+<Tip>
+When working on RBAC changes, run `pytest backend/tests/by_role/` first. These tests are organized one directory per role and validate both what each role **can** and **cannot** access. They give the fastest signal on permission regressions before running the full test suite.
+</Tip>
+
+## Test Organization
+
+```
+backend/tests/
+├── by_role/               # Contract tests — one subdirectory per role
+│   ├── business_admin/
+│   │   ├── test_access.py     # 403/404 for endpoints this role cannot reach
+│   │   └── test_functions.py  # Happy-path for permitted operations
+│   ├── business_branch_admin/
+│   ├── business_owner/
+│   ├── cashier/
+│   ├── city_admin/
+│   ├── country_admin/
+│   ├── customer/
+│   ├── delivery_driver/
+│   ├── finance_admin/
+│   ├── kitchen_staff/
+│   ├── operations_admin/
+│   ├── waiter/
+│   └── conftest.py            # Shared fixtures, test client, auth helpers
+└── unit/                  # Unit tests — pure domain and application logic
+    ├── test_order_state_machine.py
+    ├── test_guest_order_pricing.py
+    ├── test_wompi_payments.py
+    ├── test_audit_context.py
+    └── ...
+```
+
+## The Three-Layer Test Strategy
+
+**Layer 1 — Contract tests by role (`tests/by_role/`)**
+
+Each role directory tests every endpoint the role interacts with — both the endpoints it should reach (HTTP 200/201) and the endpoints it must be blocked from (HTTP 403/404). This is the primary mechanism for verifying RBAC correctness end-to-end.
+
+**Layer 2 — Unit tests (`tests/unit/`)**
+
+Domain logic, state machines, pricing calculations, and security functions are tested in isolation. Key files:
+
+- `test_order_state_machine.py` — valid and invalid FSM transitions
+- `test_guest_order_pricing.py` — server-side price recalculation (amounts are never trusted from the client)
+- `test_wompi_payments.py` — checkout creation, webhook signature validation, idempotency
+- `test_audit_context.py` — audit event creation and field population
+
+**Layer 3 — Integration / E2E tests**
+
+Playwright smoke tests run in CI against the built frontend. These cover critical user flows (login, place order, view dashboard) to catch integration regressions that unit tests cannot.
+
+## Pre-Commit Hooks
+
+`.pre-commit-config.yaml` installs two hooks that run before every `git commit`:
+
+```yaml
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.10
+    hooks:
+      - id: ruff
+        args: [--fix]         # Auto-fix safe issues
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
+  - repo: local
+    hooks:
+      - id: backend-pytest-smoke
+        name: backend pytest smoke
+        entry: bash -c 'cd backend && python -m pytest tests/by_role tests/unit/test_order_state_machine.py tests/unit/test_guest_order_pricing.py -q'
+        language: system
+        pass_filenames: false
+        files: ^backend/
+```
+
+The smoke pytest only triggers when a `backend/` file is staged. It runs the full by-role suite plus the two most critical unit tests. Commits that break contract tests or the order/pricing domain are rejected before they leave the developer's machine.
+
+Install the hooks once after cloning:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+## Keeping Sources of Truth in Sync
+
+<Note>
+There are six files that must stay synchronized whenever a role, permission, or endpoint changes:
+
+1. `backend/app/modules/auth/domain/rbac.py` — Python permission definitions
+2. `frontend/src/lib/permissions.ts` — TypeScript permission constants
+3. `backend/tests/by_role/<role>/test_access.py` — access control assertions
+4. `backend/tests/by_role/<role>/test_functions.py` — functional assertions
+5. Route decorators — `require_permission("...")` in `routes.py` files
+6. API documentation — endpoint permission requirements
+
+A change to any one of these without updating the others will cause CI to fail (the test files will catch it) or will silently break the UI permission checks. Always update all six when modifying the permission model.
+</Note>
+
+## Test Data Patterns
+
+Tests use in-memory SQLite databases (via SQLAlchemy's `create_engine("sqlite:///:memory:")`) for isolation. Each test that needs database state seeds its own minimum catalog using helper functions (e.g. `_seed_minimum_catalog`) defined in the test file or `conftest.py`. Tests never share state between test functions.
+
+Deterministic values (fixed timestamps, known reference strings, hardcoded checksums) are used in webhook and signature tests so that test failures produce identical output on every run and in every environment.

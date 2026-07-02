@@ -1,0 +1,286 @@
+---
+title: "Cashier API: Shift Management and Payment Reconciliation"
+sidebarTitle: "Cashier"
+description: "Endpoints for opening and closing cashier shifts, recording payments, and reconciling cash. Requires cashier.open, cashier.close, or cashier.reconcile permissions."
+---
+
+The Cashier API manages the full lifecycle of a cashier shift — from opening with an initial float through intra-shift cash movements, summary inspection, and final arqueo (close-out reconciliation). All monetary values are expressed as **integer centavos** (Colombian pesos × 100). Every endpoint is scoped to the authenticated user's branch and enforces fine-grained RBAC permissions defined in `rbac.py`.
+
+## Permissions
+
+| Permission | Description |
+|---|---|
+| `cashier.read` | Consult the cashier overview, shift list, movements, summaries, and liquidations |
+| `cashier.reconcile` | Open shifts, register the initial base, record movements, and close shifts |
+| `cashier.open` | Granted to the `cashier` operative role — allows opening a new shift |
+| `cashier.close` | Granted to the `cashier` operative role — allows closing (arqueo) a shift |
+
+The `cashier` built-in role automatically receives `cashier.read`, `cashier.reconcile`, `cashier.open`, and `cashier.close`.
+
+---
+
+## GET /api/v1/cashier/overview
+
+Returns an at-a-glance summary of the current cashier state for the caller's branch: active shift count, total cash on hand, and any pending reconciliation flags.
+
+**Permission required:** `cashier.read`
+
+```bash
+curl -X GET https://api.zippi.co/api/v1/cashier/overview \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="object">Overview payload with branch cashier state.</ResponseField>
+
+---
+
+## GET /api/v1/cashier/shifts
+
+Returns a paginated list of cashier shifts. Optionally filter to a specific courier/cashier or restrict results to active shifts only.
+
+**Permission required:** `cashier.read`
+
+### Query Parameters
+
+<ParamField query="page" type="integer" default="1">Page number (1-indexed).</ParamField>
+<ParamField query="page_size" type="integer" default="20">Number of results per page.</ParamField>
+<ParamField query="courier_id" type="integer">Filter shifts belonging to a specific courier/cashier user ID.</ParamField>
+<ParamField query="active_only" type="boolean" default="false">When `true`, only returns shifts that are currently open.</ParamField>
+
+```bash
+curl -X GET "https://api.zippi.co/api/v1/cashier/shifts?active_only=true&page=1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="object">Paginated list of shift objects.</ResponseField>
+<ResponseField name="data.items" type="array">Array of shift records.</ResponseField>
+<ResponseField name="data.total" type="integer">Total number of matching shifts.</ResponseField>
+<ResponseField name="data.page" type="integer">Current page.</ResponseField>
+<ResponseField name="data.page_size" type="integer">Page size used.</ResponseField>
+
+---
+
+## POST /api/v1/cashier/shifts
+
+Opens a new cashier shift. The caller becomes the shift owner. Returns `201 Created`.
+
+**Permission required:** `cashier.reconcile`
+
+### Body
+
+<ParamField body="initial_amount" type="integer" required>
+  Opening float in **centavos** (e.g. `5000000` = $50,000 COP). Must be a non-negative integer.
+</ParamField>
+<ParamField body="note" type="string">Optional free-text note attached to the shift opening event.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/cashier/shifts \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "initial_amount": 5000000,
+    "note": "Morning shift float"
+  }'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Newly created shift record including `shift_id`, `status`, `opened_at`, and the caller's user info.</ResponseField>
+
+---
+
+## GET /api/v1/cashier/shifts/{shift_id}
+
+Retrieves the full detail of a single shift.
+
+**Permission required:** `cashier.read`
+
+### Path Parameters
+
+<ParamField path="shift_id" type="integer" required>The numeric ID of the shift.</ParamField>
+
+```bash
+curl -X GET https://api.zippi.co/api/v1/cashier/shifts/42 \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="object">Full shift object including status, amounts, timestamps, and owner.</ResponseField>
+
+---
+
+## POST /api/v1/cashier/shifts/{shift_id}/base
+
+Registers (or updates) the initial cash base for a shift. Useful when the float is counted after opening, or corrected before the first movement.
+
+**Permission required:** `cashier.reconcile`
+
+### Path Parameters
+
+<ParamField path="shift_id" type="integer" required>ID of the target shift.</ParamField>
+
+### Body
+
+<ParamField body="amount" type="integer" required>Verified base amount in **centavos**.</ParamField>
+<ParamField body="note" type="string">Optional auditor note.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/cashier/shifts/42/base \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 5000000}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Updated shift record.</ResponseField>
+
+---
+
+## GET /api/v1/cashier/shifts/{shift_id}/movements
+
+Lists all cash movements (income, expenses, adjustments) recorded under a shift.
+
+**Permission required:** `cashier.read`
+
+### Path Parameters
+
+<ParamField path="shift_id" type="integer" required>ID of the target shift.</ParamField>
+
+```bash
+curl -X GET https://api.zippi.co/api/v1/cashier/shifts/42/movements \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="array">List of movement objects, each with `type`, `amount` (centavos), `description`, `created_at`, and the recording user.</ResponseField>
+
+---
+
+## POST /api/v1/cashier/shifts/{shift_id}/movements
+
+Records a new cash movement against an open shift. Use this to log collections, petty cash disbursements, or Wompi reconciliation entries.
+
+**Permission required:** `cashier.reconcile`
+
+### Path Parameters
+
+<ParamField path="shift_id" type="integer" required>ID of the target shift.</ParamField>
+
+### Body
+
+<ParamField body="type" type="string" required>Movement type. Typical values: `income`, `expense`, `adjustment`.</ParamField>
+<ParamField body="amount" type="integer" required>Movement value in **centavos**. Always positive — the `type` field determines sign.</ParamField>
+<ParamField body="description" type="string">Human-readable label for the movement (e.g. `"Order #1023 cash collection"`).</ParamField>
+<ParamField body="reference_id" type="string">Optional external reference (order ID, payment ID, etc.).</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/cashier/shifts/42/movements \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "income",
+    "amount": 2500000,
+    "description": "Order #1023 cash collection",
+    "reference_id": "1023"
+  }'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">The newly created movement record.</ResponseField>
+
+---
+
+## GET /api/v1/cashier/shifts/{shift_id}/summary
+
+Returns a computed summary of the shift: expected cash (base + movements), total income, total expenses, and net balance.
+
+**Permission required:** `cashier.read`
+
+### Path Parameters
+
+<ParamField path="shift_id" type="integer" required>ID of the target shift.</ParamField>
+
+```bash
+curl -X GET https://api.zippi.co/api/v1/cashier/shifts/42/summary \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="object">Summary with `expected_cash`, `total_income`, `total_expenses`, `net_balance` — all in centavos.</ResponseField>
+
+---
+
+## POST /api/v1/cashier/shifts/{shift_id}/close
+
+Closes a shift and records the physically counted cash amount (arqueo). The system computes the variance between expected and actual cash and stores it for reconciliation.
+
+**Permission required:** `cashier.reconcile`
+
+<Warning>
+  Closing a shift is **idempotent**. If the shift is already closed, the request succeeds silently and returns the existing closed shift — it does not create a second closing entry or throw an error. Safe to call more than once (e.g. from a retry loop).
+</Warning>
+
+### Path Parameters
+
+<ParamField path="shift_id" type="integer" required>ID of the shift to close.</ParamField>
+
+### Body
+
+<ParamField body="actual_amount" type="integer" required>
+  Physically counted cash in the drawer, expressed in **centavos** (e.g. `6800000` = $68,000 COP).
+</ParamField>
+<ParamField body="note" type="string">Optional closing note or supervisor signature reference.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/cashier/shifts/42/close \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actual_amount": 6800000,
+    "note": "Counted by supervisor Maria G."
+  }'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Closed shift record including `status: "closed"`, `closed_at`, `actual_amount`, `expected_amount`, and `variance` (all in centavos).</ResponseField>
+
+---
+
+## GET /api/v1/cashier/shifts/{shift_id}/liquidation
+
+Returns the full liquidation report for a closed shift, including a breakdown of collections by payment method (cash, Wompi, other), total deliveries, and any outstanding discrepancies.
+
+**Permission required:** `cashier.read`
+
+### Path Parameters
+
+<ParamField path="shift_id" type="integer" required>ID of the (closed) shift.</ParamField>
+
+```bash
+curl -X GET https://api.zippi.co/api/v1/cashier/shifts/42/liquidation \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="object">Liquidation breakdown: `cash_total`, `wompi_total`, `other_total`, `grand_total`, `variance`, and a line-by-line `items` array — all monetary values in centavos.</ResponseField>

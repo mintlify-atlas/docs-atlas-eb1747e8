@@ -1,0 +1,172 @@
+---
+title: "Courier App: Delivery Assignments and Evidence Upload"
+sidebarTitle: "Courier App"
+description: "The Courier App gives delivery_driver users their active assignments, navigation details, evidence photo upload, incident reporting, and personal cash tracking."
+---
+
+The Courier App is the `delivery_driver` role's dedicated surface, accessible at `/app/driver`. It is purpose-built for one job: executing deliveries safely and traceably. Couriers see only their own assigned orders, upload evidence at each handoff, report exceptions, and track personal cash collected on delivery.
+
+<Note>
+The `delivery_driver` role has scope `self`. A courier can only see, update, and act on their own deliveries. They have no visibility into other couriers' assignments, the business's order queue, or any financial data beyond their personal cash tracking.
+</Note>
+
+---
+
+## The `delivery_driver` Role
+
+| Attribute | Value |
+|-----------|-------|
+| Surface | `courier_app` |
+| Home Route | `/app/driver` |
+| Default Scope | `self` |
+| Modules | `courier_app` |
+
+### Permissions
+
+```python
+OPERATIVE_ROLE_PERMISSIONS["delivery_driver"] = [
+    "orders.read",
+    "orders.pickup",
+    "orders.transit",
+    "orders.deliver",
+    "orders.mark_failed",
+    "orders.mark_absent",
+    "couriers.read",
+    "evidence.read",
+    "evidence.manage",
+    "incidents.read",
+]
+```
+
+These permissions grant the courier exactly what they need to execute a delivery and handle exceptions — nothing more.
+
+---
+
+## How Assignments Arrive
+
+When city dispatch (operations with `dispatch.manage`) assigns a courier to a ready order, the assignment appears in the courier's active queue via:
+
+```http
+POST /api/v1/couriers/{courier_id}/assignments    # Created by dispatch (orders.assign)
+```
+
+Couriers can also receive order offers that they accept or decline:
+
+```http
+POST /api/v1/couriers/{courier_id}/offers/{order_id}/accept   # Accept an offer
+POST /api/v1/couriers/{courier_id}/offers/{order_id}/reject   # Decline an offer
+```
+
+Once accepted, the order appears in the courier's live delivery list. The system enforces a maximum concurrent assignment limit per courier (`MAX_ACTIVE_ORDERS_PER_COURIER`) to prevent overloading a single driver.
+
+<Note>
+`MAX_ACTIVE_ORDERS_PER_COURIER` is a platform-level configuration value. When a courier has reached this limit, dispatch cannot assign additional orders to them until one of their current deliveries is completed or resolved.
+</Note>
+
+---
+
+## Delivery State Transitions
+
+The courier drives the delivery through a defined sequence of states. Each transition requires the corresponding permission and is validated by the backend on submission.
+
+### Happy Path
+
+```
+Domiciliario asignado
+  → Recogido      (orders.pickup)   — courier picks up from the business
+  → En camino     (orders.transit)  — courier is en route to the customer
+  → Llegó         (system/implicit) — courier arrives at delivery address
+  → Entregado     (orders.deliver)  — order delivered to customer
+```
+
+### Exception States
+
+When delivery cannot be completed normally, the courier triggers one of two exception transitions:
+
+| Transition | Permission | Meaning |
+|-----------|-----------|---------|
+| `mark_failed` | `orders.mark_failed` | Delivery failed — access issue, wrong address, etc. |
+| `mark_absent` | `orders.mark_absent` | Customer was not present at the address |
+
+Both exception states are audited with a mandatory reason. From either state, operations staff can reschedule (`orders.reschedule`) or escalate to `Fallido` or `Reembolsado`.
+
+<Steps>
+  <Step title="Receive Assignment">
+    The order appears in the courier's active queue once dispatch assigns it or the courier accepts an offer.
+  </Step>
+  <Step title="Pick Up at Business">
+    The courier arrives at the business location and marks the order as `Recogido` using `orders.pickup`. This triggers the evidence-upload checkpoint for the pickup photo if configured.
+  </Step>
+  <Step title="En Route">
+    The courier marks `orders.transit` once they leave the business. Navigation details (customer address, contact) are displayed on screen.
+  </Step>
+  <Step title="Deliver or Handle Exception">
+    At the customer's address, the courier marks `orders.deliver` upon successful handoff. If the customer is not present they use `orders.mark_absent`; if delivery fails for another reason, `orders.mark_failed`.
+  </Step>
+  <Step title="Upload Evidence">
+    After delivery, the courier uploads a proof-of-delivery photo or signature using `evidence.manage`. Evidence is linked to the order transition and becomes part of the audit trail.
+  </Step>
+</Steps>
+
+---
+
+## Evidence Upload
+
+Delivery evidence (photos, signatures, notes) is uploaded as part of the order's audit trail. The courier interacts with the evidence module directly:
+
+| Permission | Action |
+|-----------|--------|
+| `evidence.read` | View previously uploaded evidence for their own deliveries |
+| `evidence.manage` | Upload a new photo, signature, or note attached to an order transition |
+
+Evidence records are immutable once submitted. Dispatch and support staff with `evidence.read` or `evidence.manage` on the admin side can view and validate them to resolve disputes.
+
+---
+
+## Incident Reporting
+
+Couriers can report operational incidents — a damaged item, an unsafe situation, an address dispute — directly from the delivery screen:
+
+| Permission | Action |
+|-----------|--------|
+| `incidents.read` | View incidents they have reported |
+
+<Note>
+Couriers hold `incidents.read` only. They can view the incidents they have submitted but cannot manage or resolve them. Incident resolution is handled by `support_agent`, `operations_admin`, or `city_admin`.
+</Note>
+
+---
+
+## Personal Cash Management
+
+Couriers who collect payment on delivery (cash-on-delivery orders) accumulate a personal cash balance during their shift. The courier app surfaces this balance and the history of cash collections, all scoped to the individual driver.
+
+Couriers hold `couriers.read` scoped to `self`, which enables them to view their own courier profile, current assignment load, and earnings summary. They do not see other couriers' data.
+
+---
+
+## Fleet Management (Admin Side)
+
+Fleet administration is handled by roles with `couriers.manage` — not the courier themselves. Admins use the couriers module to register new drivers, update their status, and view delivery history:
+
+```http
+GET    /api/v1/couriers                          # List all couriers (couriers.read)
+POST   /api/v1/couriers                          # Register a new courier (couriers.manage)
+GET    /api/v1/couriers/{courier_id}             # Get courier profile
+PATCH  /api/v1/couriers/{courier_id}             # Update courier info or status
+DELETE /api/v1/couriers/{courier_id}             # Deactivate courier
+GET    /api/v1/couriers/{courier_id}/history     # Delivery history (couriers.read)
+GET    /api/v1/couriers/by-phone/{phone}         # Lookup by phone
+```
+
+The courier's own app reads from the same endpoints but filtered by `scope=self` — they see only their own record.
+
+---
+
+## Scope Enforcement
+
+Because the `delivery_driver` role uses `scope=self`, every backend query involving this role is automatically restricted to the authenticated courier's own data. There is no route through which a courier can access another driver's assignments, evidence, or cash records.
+
+<Warning>
+Never relax the `self` scope enforcement for `delivery_driver`. A courier seeing another driver's orders or evidence is a data-isolation failure (IDOR). The scope filter must be applied at the database query level, not in memory after retrieval.
+</Warning>

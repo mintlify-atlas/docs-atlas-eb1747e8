@@ -1,47 +1,207 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Zippi in Under 10 Minutes"
+sidebarTitle: "Quickstart"
+description: "Run the Zippi backend and frontend locally. Covers virtualenv setup, MySQL config, migrations, and the Vite dev server in 6 steps."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through cloning the Zippi monorepo, configuring your local environment, running database migrations, seeding initial data, and starting both servers. By the end you will have the Flask API running on port 5000 and the Vite frontend running on port 5174.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the repo and verify prerequisites">
+    Clone the Zippi monorepo and confirm that the required runtimes are installed before proceeding.
 
-    ```bash
-    npm install your-package
+    <CodeGroup>
+      ```bash Clone
+      git clone https://github.com/CRISTIANCAMACH34/Zippi.git
+      cd Zippi
+      ```
+
+      ```bash Verify runtimes
+      python --version       # Python 3.11+ required
+      node --version         # Node 18+ required
+      mysql --version        # MySQL 8 required
+      redis-cli ping         # should reply PONG
+      ```
+    </CodeGroup>
+
+    **Required dependencies:**
+
+    | Dependency | Minimum version | Notes |
+    |-----------|----------------|-------|
+    | Python | 3.11 | 3.10 also works per backend README |
+    | Node.js | 18 | LTS recommended |
+    | MySQL | 8.0 | Create the `zippi_db` database before running migrations |
+    | Redis | 6+ | Required for Celery workers; optional for basic API usage |
+
+    Create the database before continuing:
+
+    ```sql
+    CREATE DATABASE zippi_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
-    ```
+  <Step title="Set up the Python backend">
+    Create a virtual environment, install all development dependencies, and copy the example environment file.
+
+    <CodeGroup>
+      ```bash macOS / Linux
+      cd backend
+      python -m venv .venv
+      source .venv/bin/activate
+      pip install -r requirements-dev.txt
+      cp .env.example .env
+      ```
+
+      ```powershell Windows
+      cd backend
+      python -m venv .venv
+      .\.venv\Scripts\Activate.ps1
+      pip install -r requirements-dev.txt
+      Copy-Item .env.example .env
+      ```
+    </CodeGroup>
+
+    <Note>
+      The application reads `.env` from the `backend/` directory. Keep your terminal working directory inside `backend/` when running Flask commands.
+    </Note>
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+  <Step title="Configure .env">
+    Open `backend/.env` in your editor. The three variables below are mandatory — the application will not start without them.
+
+    ```bash backend/.env
+    # Database — build the URL from the DB_* parts or set DATABASE_URL directly
+    DB_HOST=127.0.0.1
+    DB_PORT=3306
+    DB_DATABASE=zippi_db
+    DB_USERNAME=root
+    DB_PASSWORD=your_mysql_password
+    DATABASE_URL=mysql+pymysql://root:your_mysql_password@127.0.0.1:3306/zippi_db
+
+    # Application security — generate strong random values for production
+    SECRET_KEY=change_me_to_a_long_random_string
+    JWT_SECRET_KEY=change_me_to_another_long_random_string
+
+    # Redis (required for Celery workers)
+    REDIS_URL=redis://127.0.0.1:6379/0
+    CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+    CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
     ```
+
+    Other notable variables you may want to set now:
+
+    | Variable | Default | Description |
+    |----------|---------|-------------|
+    | `APP_ENV` | `development` | Set to `production` in prod |
+    | `TIMEZONE` | `America/Bogota` | Used for timestamps and SLAs |
+    | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,...` | Add your frontend URL |
+    | `WOMPI_ENV` | `sandbox` | Switch to `production` for live payments |
+    | `STORAGE_DRIVER` | `local` | Set to `s3` and fill AWS vars for S3 |
+
+    <Warning>
+      Never commit `.env` to version control. The `.env.example` file is the only checked-in reference.
+    </Warning>
+  </Step>
+
+  <Step title="Run migrations and seed data">
+    Apply all Alembic migrations to create the schema, then run the seed script to populate base configuration, service types, order states, and payment methods.
+
+    <CodeGroup>
+      ```bash Migrate + seed
+      # Still inside backend/ with .venv active
+      python -m flask db upgrade
+      python scripts/seed_data.py
+      ```
+
+      ```bash Create first admin user (optional)
+      python scripts/create_admin.py \
+        --email admin@zippi.local \
+        --password "YourStrongPassword" \
+        --name "Zippi Admin" \
+        --role city_admin \
+        --scope-type city \
+        --scope-id 1 \
+        --scope-label "Ciudad Principal"
+      ```
+    </CodeGroup>
+
+    `seed_data.py` registers the base configuration, service type catalog, order state definitions, and payment methods. Run it exactly once on a fresh database.
+
+    <Note>
+      The `create_admin.py` script accepts any of the 16 role keys from `rbac.py`. Common bootstrap roles are `super_admin` (global scope) and `city_admin` (city scope). See [Roles & Portals](/concepts/roles-and-portals) for the full list.
+    </Note>
+  </Step>
+
+  <Step title="Set up the frontend">
+    Open a new terminal, move to the `frontend/` directory, install npm dependencies, and configure the frontend environment file.
+
+    <CodeGroup>
+      ```bash macOS / Linux
+      cd frontend
+      npm ci
+      cp .env.example .env
+      ```
+
+      ```powershell Windows
+      cd frontend
+      npm ci
+      Copy-Item .env.example .env
+      ```
+    </CodeGroup>
+
+    Edit `frontend/.env` and point `VITE_API_URL` at the backend:
+
+    ```bash frontend/.env
+    # Must point to the BACKEND port, not the Vite dev server port
+    VITE_API_URL=http://127.0.0.1:5000
+
+    # Optional: serve mock data without a running backend
+    VITE_USE_MOCKS=false
+    ```
+
+    <Warning>
+      `VITE_API_URL` must point to the **backend** (`:5000`), not to the Vite dev server (`:5174`). Mixing them up is the most common local setup mistake.
+    </Warning>
+  </Step>
+
+  <Step title="Start both servers">
+    Run the backend and frontend in two separate terminals. They listen on different ports and communicate over HTTP.
+
+    <CodeGroup>
+      ```bash Backend (terminal 1)
+      cd backend
+      source .venv/bin/activate   # or .\.venv\Scripts\Activate.ps1 on Windows
+      python manage.py
+      # Flask API listening on http://127.0.0.1:5000
+      ```
+
+      ```bash Frontend (terminal 2)
+      cd frontend
+      npm run dev
+      # Vite dev server listening on http://127.0.0.1:5174
+      ```
+
+      ```bash Celery worker (terminal 3, optional)
+      cd backend
+      source .venv/bin/activate
+      python scripts/run_worker.py
+      # Worker processes async jobs (notifications, webhooks, etc.)
+      ```
+    </CodeGroup>
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Local URLs Reference
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+| Service | URL | Description |
+|---------|-----|-------------|
+| Flask API | `http://127.0.0.1:5000/api/v1` | Main REST API (all endpoints) |
+| Health check | `http://127.0.0.1:5000/health` | Returns `{"status":"ok"}` |
+| Readiness check | `http://127.0.0.1:5000/ready` | Pings the database |
+| Vite frontend | `http://127.0.0.1:5174` | All portal surfaces |
+| WhatsApp webhook | `http://127.0.0.1:5000/api/v1/whatsapp` | Requires tunnel (ngrok) for Meta verification |
+| Wompi webhook | `http://127.0.0.1:5000/api/v1/payments/wompi/webhook` | Requires tunnel for sandbox callbacks |
+
+<Note>
+  **Mocks mode:** Set `VITE_USE_MOCKS=true` in `frontend/.env` to run the frontend with in-memory mock data. This is useful for working on UI components without a running backend or database. Mock mode does not validate permissions or scope — it is for UI development only.
+</Note>

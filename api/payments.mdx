@@ -1,0 +1,240 @@
+---
+title: "Payments API: Wompi Integration and Webhook Handling"
+sidebarTitle: "Payments"
+description: "Wompi payment gateway endpoints including webhook reception, payment status reconciliation, and refund management. Webhook signatures are verified on every call."
+---
+
+The Payments API connects Zippi orders to the [Wompi](https://wompi.co) payment gateway. It provides endpoints for recording manual payments, initiating Wompi hosted-checkout sessions, listing payment transactions, and receiving asynchronous webhook notifications from Wompi. All order-scoped endpoints require the `orders.financial` permission. The webhook endpoint is unauthenticated (public) but is protected by HMAC checksum verification on every request.
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `WOMPI_ENV` | `sandbox` | Gateway environment. Set to `production` for live transactions. |
+| `WOMPI_BASE_URL` | `https://sandbox.wompi.co/v1` | Wompi API base URL. Switches to `https://production.wompi.co/v1` in production. |
+| `WOMPI_PUBLIC_KEY` | — | Wompi public key used on the frontend checkout widget. |
+| `WOMPI_PRIVATE_KEY` | — | Wompi private key used for server-side API calls. |
+| `WOMPI_INTEGRITY_SECRET` | — | Secret used to sign checkout integrity tokens. |
+| `WOMPI_EVENTS_SECRET` | — | Secret used to verify incoming webhook event checksums. |
+| `WOMPI_REDIRECT_URL` | `http://localhost:5173/orders` | URL Wompi redirects the customer to after checkout completes. |
+| `WOMPI_WEBHOOK_PUBLIC_URL` | `http://localhost:5000/api/v1/payments/wompi/webhook` | Public URL registered with Wompi as the event callback endpoint. |
+
+## Permissions
+
+| Permission | Description |
+|---|---|
+| `orders.financial` | View amounts, collections, and payments on an order; initiate or record payments |
+
+<Warning>
+  Webhook signature verification uses a **constant-time string comparison** to prevent timing-based attacks. Never replace this with a standard equality check (`==`). The checksum is passed in the `X-Event-Checksum` header and must match the HMAC-SHA256 of the raw request body computed with `WOMPI_EVENTS_SECRET`. Requests with a missing or invalid checksum are silently rejected.
+</Warning>
+
+---
+
+## PATCH /api/v1/payments/{order_id}/payment-method
+
+Updates the payment method associated with an order (e.g. switching from `cash` to `wompi` before collection).
+
+**Permission required:** `orders.financial`
+
+### Path Parameters
+
+<ParamField path="order_id" type="integer" required>Numeric order ID.</ParamField>
+
+### Body
+
+<ParamField body="payment_method" type="string" required>
+  New payment method. Accepted values: `cash`, `wompi`, `transfer`, `other`.
+</ParamField>
+
+```bash
+curl -X PATCH https://api.zippi.co/api/v1/payments/1023/payment-method \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"payment_method": "wompi"}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Updated order payment record with the new `payment_method` and `updated_at` timestamp.</ResponseField>
+
+---
+
+## POST /api/v1/payments/{order_id}/payments
+
+Records a manual payment entry against an order (cash collection, bank transfer confirmation, etc.). The optional `Idempotency-Key` header prevents duplicate entries when the request is retried. Returns `201 Created`.
+
+**Permission required:** `orders.financial`
+
+### Path Parameters
+
+<ParamField path="order_id" type="integer" required>Numeric order ID.</ParamField>
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string">A unique key (UUID recommended) that makes the operation safe to retry. If a payment with the same key was already recorded, the original response is returned without creating a duplicate.</ParamField>
+
+### Body
+
+<ParamField body="amount" type="integer" required>Payment amount in **centavos** (e.g. `1500000` = $15,000 COP).</ParamField>
+<ParamField body="method" type="string" required>Payment method: `cash`, `wompi`, `transfer`, `other`.</ParamField>
+<ParamField body="reference" type="string">External reference number (bank transfer ID, receipt number, etc.).</ParamField>
+<ParamField body="note" type="string">Internal note attached to this payment record.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/payments/1023/payments \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: a1b2c3d4-e5f6-7890-abcd-ef1234567890" \
+  -d '{
+    "amount": 1500000,
+    "method": "cash",
+    "reference": "REC-2024-0042"
+  }'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Created payment record including `payment_id`, `order_id`, `amount`, `method`, `reference`, and `created_at`.</ResponseField>
+
+---
+
+## GET /api/v1/payments/{order_id}/payments
+
+Lists all payment records associated with an order.
+
+**Permission required:** `orders.financial`
+
+### Path Parameters
+
+<ParamField path="order_id" type="integer" required>Numeric order ID.</ParamField>
+
+```bash
+curl -X GET https://api.zippi.co/api/v1/payments/1023/payments \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="array">Array of payment objects, each with `payment_id`, `amount` (centavos), `method`, `reference`, and `created_at`.</ResponseField>
+
+---
+
+## POST /api/v1/payments/{order_id}/wompi/checkout
+
+Creates a Wompi hosted-checkout session for an order. Returns the checkout URL and reference that the customer uses to complete payment. Returns `201 Created`.
+
+**Permission required:** `orders.financial`
+
+### Path Parameters
+
+<ParamField path="order_id" type="integer" required>Numeric order ID.</ParamField>
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string">Unique key to prevent creating duplicate checkout sessions on retry.</ParamField>
+
+### Body
+
+<ParamField body="amount_in_cents" type="integer" required>Amount to charge in **centavos**. Must match the outstanding balance of the order.</ParamField>
+<ParamField body="customer_email" type="string">Customer email address pre-filled in the Wompi checkout widget.</ParamField>
+<ParamField body="redirect_url" type="string">Override the default `WOMPI_REDIRECT_URL` for this specific checkout. Useful for deep links.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/payments/1023/wompi/checkout \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: c9d8e7f6-a5b4-3210-fedc-ba0987654321" \
+  -d '{
+    "amount_in_cents": 1500000,
+    "customer_email": "cliente@example.com"
+  }'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Checkout session details.</ResponseField>
+<ResponseField name="data.checkout_url" type="string">The Wompi hosted checkout URL to redirect the customer to.</ResponseField>
+<ResponseField name="data.reference" type="string">Unique Wompi transaction reference for this checkout session.</ResponseField>
+<ResponseField name="data.expires_at" type="string">ISO 8601 timestamp when the session expires.</ResponseField>
+
+---
+
+## GET /api/v1/payments/{order_id}/payment-transactions
+
+Returns the list of Wompi transaction records associated with an order. Each record reflects a Wompi gateway event and includes the gateway status, amounts, and timestamps.
+
+**Permission required:** `orders.financial`
+
+### Path Parameters
+
+<ParamField path="order_id" type="integer" required>Numeric order ID.</ParamField>
+
+```bash
+curl -X GET https://api.zippi.co/api/v1/payments/1023/payment-transactions \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="array">Array of Wompi transaction objects, each including `transaction_id`, `wompi_id`, `status`, `amount_in_cents`, `payment_method_type`, and `created_at`.</ResponseField>
+
+---
+
+## POST /api/v1/payments/wompi/webhook
+
+Receives asynchronous event notifications from the Wompi gateway. This endpoint is **public** (no `Authorization` header required) and is registered directly with Wompi's dashboard as the event callback URL.
+
+**No authentication header required.** Security is enforced via HMAC-SHA256 checksum verification using `WOMPI_EVENTS_SECRET`.
+
+### Webhook Security
+
+Every Wompi webhook request includes an `X-Event-Checksum` header. The service verifies it as follows:
+
+```
+checksum = HMAC-SHA256(key=WOMPI_EVENTS_SECRET, message=<raw_request_body>)
+```
+
+The computed checksum is compared against the header value using constant-time comparison. Requests that fail this check are rejected immediately.
+
+### Handled Event Types
+
+| Wompi Event | Action Taken |
+|---|---|
+| `TRANSACTION.UPDATED` | Updates the Wompi transaction record and, if the transaction status is `APPROVED`, marks the corresponding order payment as settled. |
+
+### Webhook Payload Structure
+
+<ParamField body="event" type="string" required>Event type identifier, e.g. `"TRANSACTION.UPDATED"`.</ParamField>
+<ParamField body="data" type="object" required>Event data envelope.</ParamField>
+<ParamField body="data.transaction" type="object" required>Wompi transaction object.</ParamField>
+<ParamField body="data.transaction.id" type="string">Wompi-assigned transaction UUID.</ParamField>
+<ParamField body="data.transaction.reference" type="string">Your internal order reference used when creating the checkout session.</ParamField>
+<ParamField body="data.transaction.amount_in_cents" type="integer">Transaction amount in centavos.</ParamField>
+<ParamField body="data.transaction.status" type="string">Gateway status: `PENDING`, `APPROVED`, `DECLINED`, `VOIDED`, `ERROR`.</ParamField>
+<ParamField body="data.transaction.payment_method_type" type="string">Payment instrument used: `CARD`, `NEQUI`, `PSE`, `BANCOLOMBIA_TRANSFER`, etc.</ParamField>
+<ParamField body="sent_at" type="string">ISO 8601 timestamp when Wompi dispatched the event.</ParamField>
+<ParamField body="timestamp" type="integer">Unix epoch of the event.</ParamField>
+<ParamField body="signature" type="object">Wompi signature envelope (used for integrity verification alongside `X-Event-Checksum`).</ParamField>
+
+```bash
+# Simulating a Wompi webhook in sandbox — compute the checksum locally
+SECRET="your_wompi_events_secret"
+BODY='{"event":"TRANSACTION.UPDATED","data":{"transaction":{"id":"txn_abc123","reference":"order-1023","amount_in_cents":1500000,"status":"APPROVED","payment_method_type":"NEQUI"}},"sent_at":"2024-01-15T10:30:00.000Z","timestamp":1705314600}'
+CHECKSUM=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')
+
+curl -X POST https://api.zippi.co/api/v1/payments/wompi/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Event-Checksum: $CHECKSUM" \
+  -d "$BODY"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` when the event is accepted and processed.</ResponseField>
+<ResponseField name="data" type="object">Processing result, including any state transitions triggered by the event.</ResponseField>

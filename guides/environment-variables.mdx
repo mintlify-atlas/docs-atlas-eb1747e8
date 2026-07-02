@@ -1,0 +1,172 @@
+---
+title: "Environment Variables Reference for Zippi"
+sidebarTitle: "Environment Variables"
+description: "Complete reference for all Zippi backend environment variables: app config, database, JWT, CORS, integrations, storage, Redis, Celery, and LLM settings."
+---
+
+All backend configuration is driven by environment variables loaded from `backend/.env` at startup via `app.config.settings.get_settings()`. Copy `backend/.env.example` to `backend/.env` and populate the values listed below before running the application. Variables marked **Required** must be set — leaving them blank will use insecure defaults that are rejected when `APP_ENV=production`.
+
+<Warning>
+  `SECRET_KEY` and `JWT_SECRET_KEY` must each contain at least **32 bytes** of
+  random data in production. The app raises a `RuntimeError` on startup if
+  either is missing or too short when `APP_ENV=production`. Generate safe values
+  with:
+  ```bash
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+</Warning>
+
+## App
+
+General application identity and server binding settings.
+
+| Variable   | Default                  | Required | Description                                                                 |
+| ---------- | ------------------------ | -------- | --------------------------------------------------------------------------- |
+| `APP_NAME` | `Zippi`                  | No       | Human-readable application name surfaced in health-check responses.         |
+| `APP_ENV`  | `development`            | No       | Runtime environment. Set to `production` to enable strict secret validation.|
+| `APP_DEBUG`| `true`                   | No       | Enables Flask debug mode. **Must be `false` in production.**                |
+| `APP_HOST` | `0.0.0.0`                | No       | Interface address Flask binds to. Use `127.0.0.1` to restrict to localhost. |
+| `APP_PORT` | `5000`                   | No       | TCP port the Flask API listens on.                                          |
+| `APP_URL`  | `http://localhost:5000`  | No       | Canonical public URL of the backend, used to build absolute links.          |
+| `TIMEZONE` | `America/Bogota`         | No       | IANA timezone used for timestamps and scheduled jobs.                       |
+
+## Secrets & JWT
+
+<Warning>
+  Never commit real secret values to version control. Rotate `SECRET_KEY` and
+  `JWT_SECRET_KEY` immediately if either is exposed. In production both must be
+  ≥ 32 bytes; the app will refuse to start otherwise.
+</Warning>
+
+| Variable                              | Default | Required        | Description                                                                                       |
+| ------------------------------------- | ------- | --------------- | ------------------------------------------------------------------------------------------------- |
+| `SECRET_KEY`                          | —       | **Yes (prod)**  | Flask session signing key. Must be ≥ 32 bytes in production.                                      |
+| `JWT_SECRET_KEY`                      | —       | **Yes (prod)**  | HMAC key used to sign JWT tokens (HS256). Must be ≥ 32 bytes in production. Falls back to `SECRET_KEY` if unset in development. |
+| `JWT_ACCESS_TOKEN_EXPIRES_MINUTES`    | `4`     | No              | Lifetime of short-lived access tokens in minutes.                                                 |
+| `JWT_REFRESH_TOKEN_EXPIRES_DAYS`      | `30`    | No              | Lifetime of refresh tokens in days.                                                               |
+| `ADMIN_SESSION_IDLE_TIMEOUT_MINUTES`  | `15`    | No              | Minutes of inactivity before an admin session is invalidated.                                     |
+
+## Database
+
+Zippi targets MySQL 8 in production. You may set either the high-level `DB_*` components (which are assembled into a `mysql+pymysql://` URL automatically) **or** the full `DATABASE_URL` directly — `DATABASE_URL` takes precedence when present.
+
+| Variable       | Default                                                    | Required       | Description                                                                                   |
+| -------------- | ---------------------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
+| `DB_CONNECTION`| `mysql`                                                    | No             | Driver type: `mysql`, `mariadb`, `postgresql`, or `sqlite`.                                   |
+| `DB_HOST`      | `127.0.0.1`                                                | No             | Database server hostname or IP.                                                               |
+| `DB_PORT`      | `3306`                                                     | No             | Database server port.                                                                         |
+| `DB_DATABASE`  | `zippi_db`                                                 | No             | Schema / database name.                                                                       |
+| `DB_USERNAME`  | `root`                                                     | No             | Database username.                                                                            |
+| `DB_PASSWORD`  | _(empty)_                                                  | **Yes (prod)** | Database password.                                                                            |
+| `DATABASE_URL` | `mysql+pymysql://root:tu_password@127.0.0.1:3306/zippi_db`| No             | Full SQLAlchemy DSN. Overrides all `DB_*` component variables when set.                       |
+
+## CORS
+
+Controls which browser origins may call the API. The defaults cover both Vite dev-server ports (5173 and 5174).
+
+| Variable                | Default                                                                                              | Required | Description                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------ |
+| `CORS_ALLOWED_ORIGINS`  | `http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174`           | No       | Comma-separated list of allowed origins for CORS pre-flight requests.    |
+| `CORS_ALLOW_CREDENTIALS`| `true`                                                                                               | No       | Whether cookies and `Authorization` headers are included in CORS requests.|
+
+## WhatsApp
+
+Credentials for the Meta Cloud API used by the conversational bot. All fields are optional for local development — the bot degrades gracefully when not configured.
+
+| Variable                      | Default                        | Required       | Description                                                               |
+| ----------------------------- | ------------------------------ | -------------- | ------------------------------------------------------------------------- |
+| `WHATSAPP_API_VERSION`        | `v22.0`                        | No             | Meta Graph API version, e.g. `v22.0`.                                    |
+| `WHATSAPP_PHONE_NUMBER_ID`    | —                              | **Yes (prod)** | Numeric phone number ID from the Meta Business dashboard.                 |
+| `WHATSAPP_BUSINESS_ACCOUNT_ID`| —                              | **Yes (prod)** | WhatsApp Business Account (WABA) ID.                                      |
+| `WHATSAPP_ACCESS_TOKEN`       | —                              | **Yes (prod)** | Permanent or system-user access token with `whatsapp_business_messaging` scope. |
+| `WHATSAPP_VERIFY_TOKEN`       | —                              | **Yes (prod)** | Arbitrary secret string used to verify webhook subscriptions with Meta.   |
+| `WHATSAPP_WEBHOOK_SECRET`     | —                              | **Yes (prod)** | HMAC secret to validate the `X-Hub-Signature-256` header on incoming webhooks. |
+
+## Wompi Payments
+
+Integration with [Wompi](https://wompi.co), the payment gateway used for Colombia. Set `WOMPI_ENV=production` when going live; the base URL switches automatically.
+
+| Variable                  | Default                                    | Required       | Description                                                                               |
+| ------------------------- | ------------------------------------------ | -------------- | ----------------------------------------------------------------------------------------- |
+| `WOMPI_ENV`               | `sandbox`                                  | No             | `sandbox` or `production`. Determines the default `WOMPI_BASE_URL` if not overridden.    |
+| `WOMPI_PUBLIC_KEY`        | —                                          | **Yes (prod)** | Public key from the Wompi dashboard (used client-side to tokenise cards).                 |
+| `WOMPI_PRIVATE_KEY`       | —                                          | **Yes (prod)** | Private key for server-to-server API calls.                                               |
+| `WOMPI_INTEGRITY_SECRET`  | —                                          | **Yes (prod)** | Secret used to compute the payment integrity signature.                                   |
+| `WOMPI_EVENTS_SECRET`     | —                                          | **Yes (prod)** | Secret to validate HMAC signatures on Wompi event webhooks.                               |
+| `WOMPI_BASE_URL`          | `https://sandbox.wompi.co/v1`              | No             | Wompi REST API base URL. Auto-set based on `WOMPI_ENV` if left blank.                    |
+| `WOMPI_REDIRECT_URL`      | `http://localhost:5173/orders`             | No             | Frontend URL Wompi redirects to after a payment attempt.                                  |
+| `WOMPI_WEBHOOK_PUBLIC_URL`| `http://localhost:5000/api/v1/payments/wompi/webhook` | No  | Publicly reachable URL Wompi calls for payment events.                                    |
+
+## Storage
+
+Controls where uploaded files (images, receipts) are stored. Switch `STORAGE_DRIVER` to `s3` for cloud-native deployments.
+
+| Variable                | Default            | Required       | Description                                                                 |
+| ----------------------- | ------------------ | -------------- | --------------------------------------------------------------------------- |
+| `STORAGE_DRIVER`        | `local`            | No             | Storage backend: `local` (filesystem) or `s3` (AWS S3 / compatible).       |
+| `UPLOAD_FOLDER`         | `storage/uploads`  | No             | Relative path (from `backend/`) used when `STORAGE_DRIVER=local`.          |
+| `MAX_CONTENT_LENGTH_MB` | `10`               | No             | Maximum upload size in megabytes. Mapped to Flask's `MAX_CONTENT_LENGTH`.   |
+| `AWS_ACCESS_KEY_ID`     | —                  | S3 only        | AWS access key ID for S3 operations.                                        |
+| `AWS_SECRET_ACCESS_KEY` | —                  | S3 only        | AWS secret access key.                                                      |
+| `AWS_REGION`            | —                  | S3 only        | AWS region, e.g. `us-east-1`.                                               |
+| `AWS_S3_BUCKET`         | —                  | S3 only        | S3 bucket name for uploads.                                                 |
+| `AWS_S3_BASE_URL`       | —                  | S3 only        | Base public URL for serving S3 objects (e.g. a CloudFront distribution URL).|
+
+## Redis & Celery
+
+Redis serves as both the Celery message broker and the task result backend. All three variables default to the same local Redis instance.
+
+| Variable                | Default                        | Required | Description                                                               |
+| ----------------------- | ------------------------------ | -------- | ------------------------------------------------------------------------- |
+| `REDIS_URL`             | `redis://127.0.0.1:6379/0`     | No       | Redis connection URL used by the application layer.                       |
+| `CELERY_BROKER_URL`     | `redis://127.0.0.1:6379/0`     | No       | Celery broker URL. Defaults to the same Redis instance as `REDIS_URL`.   |
+| `CELERY_RESULT_BACKEND` | `redis://127.0.0.1:6379/0`     | No       | Where Celery stores task results. Can be set to a different Redis DB.     |
+
+## Logging
+
+| Variable    | Default                        | Required | Description                                                                    |
+| ----------- | ------------------------------ | -------- | ------------------------------------------------------------------------------ |
+| `LOG_LEVEL` | `INFO`                         | No       | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`.      |
+| `LOG_FILE`  | `storage/logs/zippi.log`       | No       | Path (relative to `backend/`) for the rotating log file. Directory must exist. |
+
+## Business Rules
+
+These variables tune the platform's operational behaviour without requiring code changes. All have sensible defaults for development.
+
+| Variable                          | Default | Required | Description                                                                                     |
+| --------------------------------- | ------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `MAX_ACTIVE_ORDERS_PER_COURIER`   | `1`     | No       | Maximum number of in-progress orders a courier can hold simultaneously.                         |
+| `ORDER_ASSIGNMENT_TIMEOUT_SECONDS`| `60`    | No       | Seconds before an unaccepted order assignment is cancelled and reassigned.                      |
+| `REQUIRE_LOCATION_FOR_DELIVERY`   | `false` | No       | When `true`, couriers must share GPS location before accepting a delivery order.                |
+| `ALLOW_MANUAL_ORDER_CREATION`     | `true`  | No       | Allow operators to create orders manually from the admin panel.                                 |
+| `AUTO_NOTIFY_CUSTOMER_STATUS`     | `true`  | No       | Automatically send WhatsApp status updates to customers on order state changes.                 |
+| `DEFAULT_SERVICE_FEE_FOOD`        | `4000`  | No       | Default service fee (COP) applied to food delivery orders.                                      |
+| `DEFAULT_SERVICE_FEE_FREE_ORDER`  | `5000`  | No       | Default service fee for free-form orders.                                                       |
+| `DEFAULT_SERVICE_FEE_BILL_PAYMENT`| `5000`  | No       | Default service fee for bill payment errands.                                                   |
+| `DEFAULT_SERVICE_FEE_COPIES`      | `5000`  | No       | Default service fee for copy/print errands.                                                     |
+| `DEFAULT_SERVICE_FEE_CUSTOM_ERRAND`| `6000` | No       | Default service fee for custom / miscellaneous errands.                                         |
+
+## LLM (Local AI)
+
+Zippi includes an optional local language model that powers the conversational order bot. The model runs in-process using HuggingFace Transformers. Disable this section entirely by setting `LLM_LOCAL_ENABLED=false` if your server does not have sufficient RAM or you do not need AI features.
+
+<Note>
+  `LLM_LOCAL_ENABLED` defaults to `true` in `.env.example` but the feature only
+  activates if a model path is resolvable at startup — either via
+  `LLM_LOCAL_MODEL_PATH` or the HuggingFace local cache. The default model is
+  `HuggingFaceTB/SmolLM2-135M-Instruct`, which is downloaded automatically on
+  first use if you have an internet connection.
+</Note>
+
+| Variable                         | Default                                     | Required | Description                                                                                          |
+| -------------------------------- | ------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `LLM_LOCAL_ENABLED`              | `true`                                      | No       | Master switch for the local LLM feature. Set to `false` to disable entirely.                         |
+| `LLM_LOCAL_SELECTOR_ENABLED`     | `true`                                      | No       | Enables automatic selection of the best trained adapter from `LLM_LOCAL_RUNS_ROOT`.                  |
+| `LLM_LOCAL_MODEL_PATH`           | `HuggingFaceTB/SmolLM2-135M-Instruct`       | No       | HuggingFace model ID or absolute path to a locally downloaded model directory.                       |
+| `LLM_LOCAL_TOKENIZER_PATH`       | _(same as model path)_                      | No       | Override tokenizer path if different from the model path.                                            |
+| `LLM_LOCAL_ADAPTER_PATH`         | _(auto-detected from runs root)_            | No       | Absolute path to a LoRA adapter directory containing `adapter_model.safetensors`.                    |
+| `LLM_LOCAL_RUNS_ROOT`            | `artifacts/llm_local/runs`                  | No       | Root directory where training run outputs are stored. Used by the auto-selector.                     |
+| `LLM_LOCAL_PHASE_REPORTS_ROOT`   | `artifacts/llm_local/phase_tests`           | No       | Directory containing phase evaluation reports used to rank adapter quality.                           |
+| `LLM_LOCAL_MAX_NEW_TOKENS`       | `350`                                       | No       | Maximum number of tokens the model generates per turn.                                               |
+| `LLM_LOCAL_TEMPERATURE`          | `0.2`                                       | No       | Sampling temperature. Lower values produce more deterministic outputs.                               |
+| `LLM_LOCAL_TOP_P`                | `0.95`                                      | No       | Nucleus sampling probability mass. Combined with `LLM_LOCAL_TEMPERATURE`.                            |

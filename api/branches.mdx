@@ -1,0 +1,310 @@
+---
+title: "Business Branches API: Manage Locations and Schedules"
+sidebarTitle: "Branches"
+description: "Create, configure, and manage business branch locations. Branch lifecycle includes requesting approval from city ops, setting hours, and managing admins."
+---
+
+Branches are the physical operational units of a business on Zippi. Each branch has its own operating schedule, status, team, and — optionally — its own catalog availability overlay. A branch must be in the `operando` state and within its scheduled hours for the marketplace to show it as available for new orders.
+
+All branch state transitions are audited: every pause, closure, or reopening records the actor, timestamp, and reason in the platform audit log.
+
+<Note>
+  Zippi maintains a strict separation between **business branches** (`business_branch`) and **Zippi-owned branches** (`zippi_branch`). A `business_branch_admin` operates only within the scope of their assigned business branch and cannot interact with Zippi's own branch infrastructure, and vice versa.
+</Note>
+
+---
+
+## Branch states
+
+| State | Meaning | Operational effect |
+|---|---|---|
+| `operando` | Open and active | Receives new orders from the marketplace |
+| `pausada` | Temporarily paused | No new orders accepted; orders already in progress continue |
+| `cerrada` | Out of service | Does not operate; invisible to customers |
+| *(soft-deleted)* | Logically removed | Hidden from all views; can be restored by owner or city admin |
+
+State transitions are validated by the backend; the FSM rejects invalid transitions (e.g. `cerrada` → `operando` without going through an `operando` unlock flow).
+
+---
+
+## Permission matrix
+
+| Action | `business_owner` / `business_admin` | `business_branch_admin` | City / Ops admin |
+|---|:---:|:---:|:---:|
+| Open / set operando | ✓ | (per policy) | ✓ |
+| Pause branch | ✓ | (per policy) | ✓ |
+| Close branch | ✓ | ✗ | ✓ |
+| Request new branch | ✓ | ✗ | (approves) |
+| Create branch directly | ✓ | ✗ | ✓ |
+| Soft delete / restore | ✓ | ✗ | ✓ |
+| Set operating schedule | ✓ | ✓ | ✓ |
+| Assign branch admin | ✓ | ✗ | ✓ |
+
+---
+
+## GET /api/v1/business/branches
+
+Returns all branches for the authenticated business scope. A `business_owner` or `business_admin` sees all branches under their business. A `business_branch_admin` sees only their assigned branch.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/branches \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id_sucursal": "br_01",
+      "nombre": "Sede Centro",
+      "estado": "operando",
+      "direccion_texto": "Cra 7 #45-12, Bogotá",
+      "telefono": "+573001234567",
+      "activo": true,
+      "fecha_creacion": "2023-09-01T10:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/v1/business/branches
+
+Creates a new branch directly under the business scope. This path bypasses the city-ops approval flow and should only be used when the business has a pre-authorized agreement with city operations. Returns `201 Created`.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/business/branches \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre": "Sede Norte",
+    "direccion_texto": "Cll 100 #15-30, Bogotá",
+    "telefono": "+573009876543",
+    "ciudad_id": "city_bog"
+  }'
+```
+
+<ParamField body="nombre" type="string" required>
+  Display name for the branch (max 140 characters).
+</ParamField>
+
+<ParamField body="direccion_texto" type="string" required>
+  Human-readable physical address.
+</ParamField>
+
+<ParamField body="telefono" type="string">
+  Branch contact phone (max 30 characters).
+</ParamField>
+
+<ParamField body="ciudad_id" type="string">
+  City scope identifier. Must match an active city in the platform.
+</ParamField>
+
+<ParamField body="latitud" type="number">
+  Latitude coordinate for map display (-90 to 90).
+</ParamField>
+
+<ParamField body="longitud" type="number">
+  Longitude coordinate for map display (-180 to 180).
+</ParamField>
+
+---
+
+## POST /api/v1/business/branches/request
+
+Submits a new branch request to `city_ops` for review and approval. The request is audited from creation through approval or rejection. Returns `201 Created` with the pending request record.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/business/branches/request \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre": "Sede Chapinero",
+    "direccion_texto": "Cra 13 #63-45, Bogotá",
+    "justificacion": "Alta demanda en la zona norte-central detectada en el último trimestre"
+  }'
+```
+
+<ParamField body="nombre" type="string" required>
+  Proposed display name for the new branch.
+</ParamField>
+
+<ParamField body="direccion_texto" type="string" required>
+  Physical address of the proposed location.
+</ParamField>
+
+<ParamField body="justificacion" type="string">
+  Optional business justification text. Helps city ops evaluate the request faster.
+</ParamField>
+
+The approval flow is:
+
+```
+Business requests  ──▶  city_ops reviews  ──▶  approved  ──▶  branch created (operando)
+                                           └──▶  rejected  ──▶  request closed with reason
+```
+
+<Note>
+  When a request is submitted via this endpoint, the branch does **not** exist yet and cannot receive orders. The business portal will show the request status as `pendiente_aprobacion`. Only after city_ops approves does the branch record get created and become operational.
+</Note>
+
+---
+
+## PATCH /api/v1/business/branches/:id
+
+Updates the mutable details of an existing branch (name, address, phone, image). Does not change the branch state or schedule.
+
+```bash
+curl -X PATCH https://api.zippi.app/api/v1/business/branches/br_01 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"telefono": "+573001112233", "nombre": "Sede Centro Histórico"}'
+```
+
+<ParamField body="nombre" type="string">
+  Updated branch display name.
+</ParamField>
+
+<ParamField body="direccion_texto" type="string">
+  Updated physical address.
+</ParamField>
+
+<ParamField body="telefono" type="string">
+  Updated contact phone.
+</ParamField>
+
+<ParamField body="imagen_url" type="string">
+  Absolute URL to the branch image or banner.
+</ParamField>
+
+---
+
+## PATCH /api/v1/business/branches/:id/status
+
+Changes the operational state of a branch. Transitions are validated against the FSM and the caller's role permissions.
+
+```bash
+curl -X PATCH https://api.zippi.app/api/v1/business/branches/br_01/status \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"estado": "pausada", "motivo": "Falta de personal esta tarde"}'
+```
+
+<ParamField body="estado" type="string" required>
+  Target state for the branch. Accepted values: `operando`, `pausada`, `cerrada`.
+</ParamField>
+
+<ParamField body="motivo" type="string">
+  Human-readable reason for the transition. Required when setting `cerrada`. Stored in the audit log.
+</ParamField>
+
+<Note>
+  Pausing a branch (`pausada`) stops new orders from being created for that location. Orders already accepted and in-progress are not affected and must be completed normally. In some city configurations, transitioning from `pausada` back to `operando` may require a city-ops confirmation signal.
+</Note>
+
+---
+
+## PUT /api/v1/business/branches/:id/schedule
+
+Replaces the full operating schedule for a branch. The schedule is a list of weekday time windows. Branches outside their scheduled hours do not accept new orders even when their state is `operando`.
+
+```bash
+curl -X PUT https://api.zippi.app/api/v1/business/branches/br_01/schedule \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "horarios": [
+      {"dia_semana": 0, "hora_apertura": "11:00", "hora_cierre": "22:00", "activo": true},
+      {"dia_semana": 1, "hora_apertura": "11:00", "hora_cierre": "22:00", "activo": true},
+      {"dia_semana": 2, "hora_apertura": "11:00", "hora_cierre": "22:00", "activo": true},
+      {"dia_semana": 3, "hora_apertura": "11:00", "hora_cierre": "22:00", "activo": true},
+      {"dia_semana": 4, "hora_apertura": "11:00", "hora_cierre": "23:00", "activo": true},
+      {"dia_semana": 5, "hora_apertura": "10:00", "hora_cierre": "23:00", "activo": true},
+      {"dia_semana": 6, "hora_apertura": "10:00", "hora_cierre": "21:00", "activo": true}
+    ]
+  }'
+```
+
+<ParamField body="horarios" type="array" required>
+  Array of schedule blocks. This is a full replacement — any existing weekday blocks not included are deactivated.
+
+  <Expandable title="Schedule block fields">
+    <ParamField body="dia_semana" type="integer" required>
+      Day of week: `0` = Monday, `6` = Sunday. Maps to `HorarioNegocio.dia_semana`. Constraint: 0–6.
+    </ParamField>
+    <ParamField body="hora_apertura" type="string" required>
+      Opening time in `HH:MM` 24-hour format (e.g. `"11:00"`).
+    </ParamField>
+    <ParamField body="hora_cierre" type="string" required>
+      Closing time in `HH:MM` 24-hour format (e.g. `"22:00"`).
+    </ParamField>
+    <ParamField body="activo" type="boolean" default="true">
+      Whether this day's window is active. Set to `false` for days the branch is closed.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## POST /api/v1/business/branches/:id/admins
+
+Assigns a `business_branch_admin` role to a user for the specified branch. Returns `201 Created`.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/business/branches/br_01/admins \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "usr_789", "role": "business_branch_admin"}'
+```
+
+<ParamField body="user_id" type="string" required>
+  Platform user ID of the person to assign as branch admin.
+</ParamField>
+
+<ParamField body="role" type="string" default="business_branch_admin">
+  Role to grant. Currently only `business_branch_admin` is accepted via this endpoint.
+</ParamField>
+
+---
+
+## GET /api/v1/business/team
+
+Returns all team members visible to the authenticated business scope — owners, admins, branch admins, kitchen staff, cashiers, and waiters.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/team \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## POST /api/v1/business/team
+
+Adds a new team member to the business scope. Returns `201 Created`.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/business/team \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "usr_321",
+    "role": "kitchen_staff",
+    "branch_id": "br_01"
+  }'
+```
+
+<ParamField body="user_id" type="string" required>
+  Platform user ID of the person to add to the team.
+</ParamField>
+
+<ParamField body="role" type="string" required>
+  Role to grant. Accepted values: `business_admin`, `business_branch_admin`, `kitchen_staff`, `cashier`, `waiter`.
+</ParamField>
+
+<ParamField body="branch_id" type="string">
+  Branch to scope the role to. Required for `business_branch_admin`, `kitchen_staff`, `cashier`, and `waiter` roles.
+</ParamField>

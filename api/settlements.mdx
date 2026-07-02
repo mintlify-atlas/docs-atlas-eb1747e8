@@ -1,0 +1,199 @@
+---
+title: "Settlements API: Business Revenue and Commission Reports"
+sidebarTitle: "Settlements"
+description: "GET /api/v1/business/settlements — Lists liquidation periods showing gross revenue, Zippi commission, gateway fees, and net payout per business scope."
+---
+
+The Settlements endpoints expose the financial liquidation records that summarize what a business earns from a period's orders after Zippi's commission and payment gateway fees are deducted. All monetary amounts are integers in centavos (COP) — never floats. Settlements are immutable once generated: they represent a locked financial snapshot that can be audited and reproduced at any future point.
+
+<Warning>
+  Settlement records are **immutable once generated**. The amounts `bruto`, `comision_zippi`, `fee_pasarela`, and `neto` cannot be edited via any API endpoint after the settlement is created. Disputes or corrections are handled through a separate adjustment workflow by `finance_admin` or `city_admin`.
+</Warning>
+
+## How settlement amounts are calculated
+
+For each settlement period, the net payout to the business is computed as:
+
+```
+Bruto (gross revenue from orders)
+  − Comisión Zippi      (configurable percentage, versioned per business)
+  − Fee de pasarela     (Wompi / Nequi / transfer gateway fee)
+  − Ajustes             (refunds, reversals, promotional adjustments)
+  = Neto a liquidar     (amount transferred to the business)
+```
+
+Every component is calculated using integer arithmetic in centavos and is stored alongside the **version/rate** of the commission that was applied. Changing the commission rate creates a new version with a `fecha_vigencia_desde`; it does not retroactively alter any already-generated settlement.
+
+<Note>
+  Commission rates are versioned. The `tasa_comision` field on the `Negocio` model stores the current rate (e.g. `"12.00"` for 12%). Each settlement record stores the exact rate that was applied at generation time, ensuring full reproducibility during financial audits months or years later.
+</Note>
+
+---
+
+## GET /api/v1/business/settlements
+
+Returns a paginated list of settlement periods for the authenticated business scope. Supports filtering by date range and branch.
+
+```bash
+curl -X GET "https://api.zippi.app/api/v1/business/settlements?from_date=2024-01-01&to_date=2024-01-31&page=1&page_size=20" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Required roles:** `business_owner`, `business_admin`, `cashier`, `super_admin`, or `platform_admin` (module: `settlements`).
+
+**Query parameters**
+
+<ParamField query="from_date" type="string">
+  ISO 8601 date (e.g. `2024-01-01`). Returns settlements whose period starts on or after this date.
+</ParamField>
+
+<ParamField query="to_date" type="string">
+  ISO 8601 date (e.g. `2024-01-31`). Returns settlements whose period ends on or before this date.
+</ParamField>
+
+<ParamField query="branch_id" type="string">
+  Filter settlements for a specific branch. When omitted, all branches in the business scope are included.
+</ParamField>
+
+<ParamField query="page" type="integer" default="1">
+  Page number, 1-indexed.
+</ParamField>
+
+<ParamField query="page_size" type="integer" default="20">
+  Records per page. Recommended maximum: 100.
+</ParamField>
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id_liquidacion": "liq_20240131",
+        "periodo_inicio": "2024-01-01",
+        "periodo_fin": "2024-01-31",
+        "branch_id": "br_01",
+        "bruto_centavos": 45000000,
+        "comision_zippi_centavos": 5400000,
+        "tasa_comision_aplicada": "12.00",
+        "fee_pasarela_centavos": 225000,
+        "ajustes_centavos": -50000,
+        "neto_centavos": 39325000,
+        "estado": "generada",
+        "fecha_generacion": "2024-02-01T03:00:00Z"
+      }
+    ],
+    "total": 3,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
+
+<ResponseField name="id_liquidacion" type="string">
+  Unique identifier for the settlement record.
+</ResponseField>
+
+<ResponseField name="periodo_inicio" type="string">
+  ISO 8601 date marking the start of the settlement period.
+</ResponseField>
+
+<ResponseField name="periodo_fin" type="string">
+  ISO 8601 date marking the end of the settlement period.
+</ResponseField>
+
+<ResponseField name="branch_id" type="string | null">
+  Branch scope of the settlement. `null` for business-level aggregated settlements.
+</ResponseField>
+
+<ResponseField name="bruto_centavos" type="integer">
+  Gross revenue from all completed orders in the period, in centavos. Always an integer.
+</ResponseField>
+
+<ResponseField name="comision_zippi_centavos" type="integer">
+  Zippi commission deducted, in centavos. Computed as `bruto × tasa_comision_aplicada / 100`.
+</ResponseField>
+
+<ResponseField name="tasa_comision_aplicada" type="string">
+  Decimal string of the commission rate that was active when this settlement was generated (e.g. `"12.00"` for 12%). Immutable after generation.
+</ResponseField>
+
+<ResponseField name="fee_pasarela_centavos" type="integer">
+  Payment gateway fees (Wompi, Nequi, etc.) deducted, in centavos.
+</ResponseField>
+
+<ResponseField name="ajustes_centavos" type="integer">
+  Net adjustments in centavos (negative = deductions for refunds/reversals; positive = credits). May be `0`.
+</ResponseField>
+
+<ResponseField name="neto_centavos" type="integer">
+  Net amount to be transferred to the business: `bruto − comision_zippi − fee_pasarela + ajustes`. Always an integer in centavos.
+</ResponseField>
+
+<ResponseField name="estado" type="string">
+  Settlement lifecycle state. Values: `generada` (generated, awaiting transfer), `pagada` (transferred to business), `en_disputa` (under review), `ajustada` (corrected by finance admin).
+</ResponseField>
+
+<ResponseField name="fecha_generacion" type="string">
+  ISO 8601 UTC datetime when the settlement record was created.
+</ResponseField>
+
+---
+
+## GET /api/v1/business/settlements/:id
+
+Returns the full detail of a single settlement, including the list of order IDs included in the period, a breakdown of all fee components, and the audit trail of who generated it.
+
+```bash
+curl -X GET https://api.zippi.app/api/v1/business/settlements/liq_20240131 \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id_liquidacion": "liq_20240131",
+    "periodo_inicio": "2024-01-01",
+    "periodo_fin": "2024-01-31",
+    "branch_id": "br_01",
+    "bruto_centavos": 45000000,
+    "comision_zippi_centavos": 5400000,
+    "tasa_comision_aplicada": "12.00",
+    "fee_pasarela_centavos": 225000,
+    "ajustes_centavos": -50000,
+    "neto_centavos": 39325000,
+    "estado": "pagada",
+    "fecha_generacion": "2024-02-01T03:00:00Z",
+    "fecha_pago": "2024-02-03T10:30:00Z",
+    "ordenes_incluidas": [1001, 1002, 1045, 1088],
+    "total_ordenes": 147,
+    "generado_por": "system_job",
+    "version_comision": "v4"
+  }
+}
+```
+
+<ResponseField name="ordenes_incluidas" type="array">
+  Sampled list of `id_pedido` values included in this settlement. For large periods, only the first and last N order IDs may be returned here; the full list is available via the export endpoint.
+</ResponseField>
+
+<ResponseField name="total_ordenes" type="integer">
+  Total count of orders included in the period's calculation.
+</ResponseField>
+
+<ResponseField name="generado_por" type="string">
+  Actor that triggered settlement generation: `system_job` for scheduled generation, or the `user_id` of a finance admin who triggered it manually.
+</ResponseField>
+
+<ResponseField name="version_comision" type="string">
+  Internal version tag of the commission schedule applied. Use this to look up the exact rate table in the platform audit log.
+</ResponseField>
+
+<ResponseField name="fecha_pago" type="string | null">
+  ISO 8601 UTC datetime when the net amount was transferred to the business. `null` if the settlement is still in `generada` state.
+</ResponseField>

@@ -1,0 +1,264 @@
+---
+title: "Multi-Tenant Data Scoping in Zippi"
+sidebarTitle: "Multi-Tenant Scoping"
+description: "Zippi enforces strict tenant isolation at the query layer using a scope hierarchy from global down to individual business branches."
+---
+
+Tenant isolation is the most critical security property in Zippi. Every user operates within a scope that limits which rows they can read or write. The scope filter must be applied at the database query level — never in Python memory after the fact. A data leak between tenants is classified as **Blocker** severity.
+
+## The 8 Scope Types
+
+Zippi defines exactly eight scope types, organized in a strict containment hierarchy. Each is registered in `SCOPE_TYPES` in `backend/app/modules/auth/domain/rbac.py`.
+
+```
+global
+ └── country
+      └── city
+           ├── zippi_branch        (Zippi-owned branch)
+           └── business_group      (multi-brand group)
+                └── business        (individual brand/business)
+                     └── business_branch  (physical branch of a business)
+self  (a single user: delivery_driver or customer)
+```
+
+| Scope key | Label | Who uses it |
+|-----------|-------|------------|
+| `global` | Global | `super_admin`, `platform_admin` |
+| `country` | País | `country_admin` |
+| `city` | Ciudad | `city_admin`, `operations_admin`, `finance_admin`, `support_agent` |
+| `zippi_branch` | Sucursal Zippi | `zippi_branch_admin` |
+| `business_group` | Grupo empresarial | `business_owner` |
+| `business` | Negocio / marca | `business_admin` |
+| `business_branch` | Sucursal de negocio | `business_branch_admin`, `kitchen_staff`, `cashier`, `waiter` |
+| `self` | Propio | `delivery_driver`, `customer` |
+
+A scope at a higher level **contains** all scopes beneath it in the same branch. A `city_admin` sees all businesses, branches, and orders within their city. A `business_owner` sees all branches across their business group. A `business_branch_admin` sees only their single branch.
+
+## Scope Aliases
+
+Scope keys are normalized before comparison. The `SCOPE_ALIASES` dictionary in `rbac.py` maps Spanish-language variants to canonical keys:
+
+```python
+SCOPE_ALIASES = {
+    "pais": "country",
+    "país": "country",
+    "ciudad": "city",
+    "sucursal_zippi": "zippi_branch",
+    "zippi branch": "zippi_branch",
+    "negocio": "business",
+    "marca": "business",
+    "sucursal": "business_branch",
+    "business branch": "business_branch",
+    "sucursal_negocio": "business_branch",
+    "propio": "self",
+    "zona": "city",
+}
+```
+
+Always call `normalize_scope_key()` before comparing or storing a scope type. Never use raw strings.
+
+## The Hard Rule
+
+> **Every** read or write operation must include a scope filter applied at the SQL query level — not in Python memory after fetching rows.
+
+```python
+# WRONG — fetches all rows across all tenants, then filters in Python
+all_orders = session.query(Pedido).all()
+return [o for o in all_orders if o.id_negocio == scope.business_id]
+
+# CORRECT — scope filter is part of the SQL query
+def list_orders(self, scope: BusinessScope, **filters):
+    q = session.query(Pedido)
+    q = apply_scope(q, scope)          # ALWAYS; applied first
+    if filters.get("status"):
+        q = q.filter(Pedido.estado == filters["status"])
+    return q.order_by(Pedido.id.desc()).all()
+```
+
+## The `BusinessScope` Dataclass
+
+For business-portal requests, the scope is materialized as a `BusinessScope` dataclass defined in `backend/app/modules/business/security/business_scope.py`:
+
+```python
+@dataclass(frozen=True)
+class BusinessScope:
+    role: str
+    scope_type: str
+    scope_id: str | None
+    business_id: int | None
+    branch_id: int | None
+    email: str
+```
+
+`business_scope_from_user()` builds this from the JWT payload. It resolves `business_id` from `branch_id` when only the branch is set (via a database lookup on `SucursalNegocio`), and raises a `403` if a non-super-admin user has no business or branch assignment.
+
+```python
+# backend/app/modules/business/security/business_scope.py
+
+BUSINESS_ROLES = {
+    "business_owner", "business_admin", "business_branch_admin",
+    "kitchen_staff", "cashier", "waiter",
+    "super_admin", "platform_admin",
+}
+
+def business_scope_from_user(user: dict | None) -> BusinessScope:
+    if not user:
+        raise HttpError("Sesion requerida", status_code=401)
+    role = str(_first_value(user, "role", "rol") or "")
+    if role not in BUSINESS_ROLES:
+        raise HttpError("Este modulo es solo para usuarios de negocio", status_code=403)
+    # ... resolves business_id and branch_id from JWT claims
+```
+
+## `apply_scope` Implementation Pattern
+
+The `apply_scope` function gates every query by the user's scope type:
+
+```python
+def apply_scope(q, scope: BusinessScope):
+    if scope.role in {"super_admin", "platform_admin"}:
+        return q                              # global — no filter
+    if scope.branch_id is not None:
+        q = q.filter(Pedido.id_sucursal == scope.branch_id)
+    elif scope.business_id is not None:
+        q = q.filter(Pedido.id_negocio == scope.business_id)
+    if scope.scope_type == "self":
+        q = q.filter(Pedido.id_usuario == scope.user_id)
+    return q
+```
+
+Geographic scopes (`country`, `city`, `zippi_branch`) use their own geographic filters. "No `business_id`" for these roles does not mean "no filter" — it means "filter by geography".
+
+## Row-Level Membership Check: `row_in_business_scope`
+
+For single-row operations (GET by ID, PUT, DELETE), use `row_in_business_scope()` to confirm the row belongs to the user's scope before returning or mutating it:
+
+```python
+# backend/app/modules/business/security/business_scope.py
+
+def row_in_business_scope(row: dict[str, Any], scope: BusinessScope) -> bool:
+    if scope.role in {"super_admin", "platform_admin"}:
+        return True
+    if scope.branch_id is not None:
+        return _to_int(
+            row.get("businessBranchId") or row.get("branch_id")
+        ) == scope.branch_id
+    if scope.business_id is not None:
+        return _to_int(
+            row.get("businessId") or row.get("business_id")
+        ) == scope.business_id
+    return False
+```
+
+## IDOR Prevention: Membership Over Existence
+
+A valid ID does not imply access. The pattern to follow:
+
+```python
+# WRONG — IDOR vulnerability
+order = repo.get_by_id(oid)         # whose order is this?
+return serialize(order)             # leaks data from another tenant
+
+# CORRECT — scope validated inside the repository call
+order = repo.get_order(scope, oid)  # filters by scope in SQL
+if order is None:
+    raise HttpError("No encontrado", status_code=404)   # 404, not 403
+return serialize(order)
+```
+
+Respond with **404** (not 403) when a resource from another tenant is requested by ID. A 403 would confirm the resource exists; a 404 reveals nothing.
+
+## Example: `business_admin` Scope Query
+
+A `business_admin` authenticates with `scope_type = "business"` and `scope_id = 42`. Here is how a product listing query is constructed:
+
+```python
+# 1. Build scope from JWT
+scope = business_scope_from_user(current_user)
+# → BusinessScope(role="business_admin", scope_type="business",
+#                 business_id=42, branch_id=None, ...)
+
+# 2. Query with scope filter
+q = session.query(Producto)
+# apply_scope adds: WHERE id_negocio = 42
+q = apply_scope(q, scope)
+
+# 3. Additional filters come after scope
+q = q.filter(Producto.activo == True)
+products = q.all()
+# → Only products belonging to business 42 are returned
+```
+
+If that same user tries to GET a product with `id = 99` that belongs to business 77:
+
+```python
+product = repo.get_product(scope, product_id=99)
+# apply_scope makes the query: WHERE id = 99 AND id_negocio = 42
+# → returns None (no match)
+# → controller raises HttpError("No encontrado", 404)
+```
+
+## Tenant Discriminators
+
+Every operational entity carries the discriminator columns that bind it to a tenant:
+
+| Entity | Tenant discriminators |
+|--------|----------------------|
+| Product (`Producto`) | `id_negocio` (and optionally `id_sucursal`) |
+| Order (`Pedido`) | `id_negocio`, `id_sucursal` |
+| Settlement (`Liquidacion`) | `id_negocio` |
+| Cashier shift (`TurnoCaja`) | `id_sucursal` |
+| Operative user | `id_negocio` or `id_sucursal` depending on role |
+
+Every new operational table must be created with its tenant discriminator from day one.
+
+## Write Operations and Scope
+
+Mutations follow the same rules:
+
+```python
+# WRONG — allows mass assignment of tenant (user sends id_negocio in body)
+product = Producto(id_negocio=data.id_negocio, ...)
+
+# CORRECT — tenant comes from the authenticated scope, never from the request body
+product = Producto(
+    id_negocio=scope.business_id,   # from scope, not from body
+    nombre=data.nombre,
+    precio=data.precio,
+)
+```
+
+For UPDATE and DELETE, always include the tenant discriminator in the `WHERE` clause:
+
+```sql
+-- WRONG
+UPDATE productos SET precio = :precio WHERE id = :id;
+
+-- CORRECT
+UPDATE productos SET precio = :precio
+WHERE id = :id AND id_negocio = :business_id;
+```
+
+<Warning>
+  A data leak between tenants is classified as **Blocker** severity. Any query that reads or writes operational data without a scope filter at the SQL level must be treated as a security vulnerability and fixed immediately, regardless of other pending work.
+</Warning>
+
+## `self` Scope: Couriers and Customers
+
+Users with scope type `self` can only access their own records:
+
+- `delivery_driver` → filtered by `id_domiciliario == user_id`
+- `customer` → filtered by `id_cliente == user_id`
+
+These users access dedicated endpoints (`/customer/orders`, `/courier/deliveries`) that apply the `self` filter automatically — they are never given access to the admin-level `/orders` endpoint.
+
+## Multi-Tenant Checklist
+
+```text
+- [ ] Every new query passes through apply_scope / filters by tenant in SQL
+- [ ] Access by ID validates membership (not just format or existence)
+- [ ] Create operations take the tenant from scope, never from the request body
+- [ ] Update / delete operations include the tenant discriminator in the WHERE clause
+- [ ] Resources from another tenant respond with 404 (not 403)
+- [ ] Tenant isolation is covered by automated tests
+```

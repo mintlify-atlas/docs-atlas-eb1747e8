@@ -1,0 +1,306 @@
+---
+title: "Couriers API: Fleet Management and Delivery Tracking"
+sidebarTitle: "Couriers"
+description: "Manage couriers, track active deliveries, assign orders, and view courier performance. Requires couriers.read or couriers.manage permissions."
+---
+
+The Couriers API provides full fleet lifecycle management — registering couriers, updating their operational status, assigning and responding to order offers, and paginating delivery history. Assignment logic respects the `MAX_ACTIVE_ORDERS_PER_COURIER` and `ORDER_ASSIGNMENT_TIMEOUT_SECONDS` environment variables, ensuring dispatch stays within safe capacity bounds.
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_ACTIVE_ORDERS_PER_COURIER` | `1` | Maximum concurrent active orders a courier can hold. Assignment is rejected when this limit is reached. |
+| `ORDER_ASSIGNMENT_TIMEOUT_SECONDS` | `60` | Seconds a courier has to accept or reject an order offer before it expires and is re-queued. |
+
+## Permissions
+
+| Permission | Description |
+|---|---|
+| `couriers.read` | List couriers, view profiles, delivery history, and performance metrics |
+| `couriers.manage` | Register, update, and delete couriers; manage fleet status and blocks |
+| `couriers.settlements` | View courier discrepancies, close-outs, and liquidation records |
+| `orders.assign` | Assign orders to couriers and process accept/reject offers |
+
+---
+
+## GET /api/v1/couriers
+
+Returns a paginated list of couriers with optional status and date-range filters.
+
+**Permission required:** `couriers.read`
+
+### Query Parameters
+
+<ParamField query="page" type="integer" default="1">Page number (1-indexed).</ParamField>
+<ParamField query="page_size" type="integer" default="20">Number of results per page.</ParamField>
+<ParamField query="status" type="string">Filter by courier status. Common values: `active`, `inactive`, `blocked`.</ParamField>
+<ParamField query="active_only" type="boolean" default="false">When `true` (also accepts `1`, `yes`, `si`), returns only couriers currently on shift.</ParamField>
+<ParamField query="start_date" type="string">ISO 8601 date (`YYYY-MM-DD`) — lower bound for registration or activity date.</ParamField>
+<ParamField query="end_date" type="string">ISO 8601 date (`YYYY-MM-DD`) — upper bound for registration or activity date.</ParamField>
+
+```bash
+curl -X GET "https://api.zippi.co/api/v1/couriers?active_only=true&status=active&page=1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="object">Paginated courier list.</ResponseField>
+<ResponseField name="data.items" type="array">Array of courier profile objects.</ResponseField>
+<ResponseField name="data.total" type="integer">Total matching couriers.</ResponseField>
+<ResponseField name="data.page" type="integer">Current page number.</ResponseField>
+<ResponseField name="data.page_size" type="integer">Page size used.</ResponseField>
+
+---
+
+## POST /api/v1/couriers
+
+Registers a new courier. If a courier with the same identifying info already exists, the service returns `200 OK` with `created: false`; a genuinely new record returns `201 Created` with `created: true`.
+
+**Permission required:** `couriers.manage`
+
+### Body
+
+<ParamField body="name" type="string" required>Full name of the courier.</ParamField>
+<ParamField body="phone" type="string" required>Mobile phone number in E.164 format (e.g. `"+573001234567"`).</ParamField>
+<ParamField body="vehicle_type" type="string">Vehicle type. E.g. `bicycle`, `motorcycle`, `car`.</ParamField>
+<ParamField body="vehicle_plate" type="string">Vehicle plate number (if applicable).</ParamField>
+<ParamField body="city_id" type="integer">City ID the courier is assigned to.</ParamField>
+<ParamField body="notes" type="string">Internal notes or background check references.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/couriers \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Carlos Mejia",
+    "phone": "+573001234567",
+    "vehicle_type": "motorcycle",
+    "vehicle_plate": "ABC123",
+    "city_id": 11001
+  }'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Courier record with `courier_id`, `name`, `phone`, `status`, and `created` flag.</ResponseField>
+<ResponseField name="data.created" type="boolean">`true` if a new record was created; `false` if an existing record was matched.</ResponseField>
+
+---
+
+## GET /api/v1/couriers/by-phone/{phone}
+
+Retrieves a single courier profile by their mobile phone number. Useful for onboarding flows where the courier ID is unknown.
+
+**Permission required:** `couriers.read`
+
+### Path Parameters
+
+<ParamField path="phone" type="string" required>Phone number to look up (URL-encoded E.164, e.g. `%2B573001234567`).</ParamField>
+
+```bash
+curl -X GET "https://api.zippi.co/api/v1/couriers/by-phone/%2B573001234567" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="object">Courier profile object or `null` if not found.</ResponseField>
+
+---
+
+## GET /api/v1/couriers/{courier_id}
+
+Retrieves the full profile and performance summary of a single courier, optionally scoped to a date window.
+
+**Permission required:** `couriers.read`
+
+### Path Parameters
+
+<ParamField path="courier_id" type="integer" required>Numeric courier ID.</ParamField>
+
+### Query Parameters
+
+<ParamField query="start_date" type="string">ISO 8601 date — start of performance window.</ParamField>
+<ParamField query="end_date" type="string">ISO 8601 date — end of performance window.</ParamField>
+
+```bash
+curl -X GET "https://api.zippi.co/api/v1/couriers/7?start_date=2024-01-01&end_date=2024-01-31" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="object">Full courier profile including `courier_id`, `name`, `phone`, `status`, `vehicle_type`, `vehicle_plate`, `city_id`, and optional performance metrics for the requested date window.</ResponseField>
+
+---
+
+## PATCH /api/v1/couriers/{courier_id}
+
+Partially updates a courier record. Commonly used to toggle operational status (`active` ↔ `blocked`) or update vehicle details.
+
+**Permission required:** `couriers.manage`
+
+### Path Parameters
+
+<ParamField path="courier_id" type="integer" required>Numeric courier ID.</ParamField>
+
+### Body
+
+<ParamField body="status" type="string">New status value. Accepted values: `active`, `inactive`, `blocked`.</ParamField>
+<ParamField body="name" type="string">Updated display name.</ParamField>
+<ParamField body="phone" type="string">Updated phone number in E.164 format.</ParamField>
+<ParamField body="vehicle_type" type="string">Updated vehicle type.</ParamField>
+<ParamField body="vehicle_plate" type="string">Updated plate number.</ParamField>
+<ParamField body="notes" type="string">Updated internal notes.</ParamField>
+
+```bash
+curl -X PATCH https://api.zippi.co/api/v1/couriers/7 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "blocked", "notes": "Suspended pending ID verification"}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Updated courier record.</ResponseField>
+
+---
+
+## DELETE /api/v1/couriers/{courier_id}
+
+Soft-deletes a courier from the fleet. The record is retained for audit and history purposes but the courier will no longer appear in active lists.
+
+**Permission required:** `couriers.manage`
+
+### Path Parameters
+
+<ParamField path="courier_id" type="integer" required>Numeric courier ID.</ParamField>
+
+```bash
+curl -X DELETE https://api.zippi.co/api/v1/couriers/7 \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Confirmation payload including the deleted courier's ID and `deleted_at` timestamp.</ResponseField>
+
+---
+
+## POST /api/v1/couriers/{courier_id}/assignments
+
+Assigns an order directly to a courier. The system enforces `MAX_ACTIVE_ORDERS_PER_COURIER` (default `1`) — if the courier is already at capacity the call returns an error. Returns `201 Created` on successful assignment.
+
+**Permission required:** `orders.assign`
+
+### Path Parameters
+
+<ParamField path="courier_id" type="integer" required>Numeric ID of the courier to assign the order to.</ParamField>
+
+### Body
+
+<ParamField body="order_id" type="integer" required>ID of the order to assign.</ParamField>
+<ParamField body="note" type="string">Optional dispatcher note attached to the assignment event.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/couriers/7/assignments \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"order_id": 1023}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Assignment record including `assignment_id`, `courier_id`, `order_id`, and `assigned_at`.</ResponseField>
+
+---
+
+## POST /api/v1/couriers/{courier_id}/offers/{order_id}/accept
+
+The courier (or dispatcher on their behalf) accepts a pending order offer. Once accepted the order moves to the courier's active delivery queue.
+
+**Permission required:** `orders.assign`
+
+### Path Parameters
+
+<ParamField path="courier_id" type="integer" required>Courier ID.</ParamField>
+<ParamField path="order_id" type="integer" required>Order ID of the pending offer.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/couriers/7/offers/1023/accept \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Updated order and assignment state.</ResponseField>
+
+---
+
+## POST /api/v1/couriers/{courier_id}/offers/{order_id}/reject
+
+The courier (or dispatcher on their behalf) rejects a pending order offer. The order is returned to the dispatch queue for reassignment.
+
+**Permission required:** `orders.assign`
+
+<Note>
+  After rejection the order offer timer (`ORDER_ASSIGNMENT_TIMEOUT_SECONDS`, default `60`) is reset and the order becomes eligible for the next available courier.
+</Note>
+
+### Path Parameters
+
+<ParamField path="courier_id" type="integer" required>Courier ID.</ParamField>
+<ParamField path="order_id" type="integer" required>Order ID of the pending offer.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/couriers/7/offers/1023/reject \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Updated order state indicating the offer was rejected and the order returned to queue.</ResponseField>
+
+---
+
+## GET /api/v1/couriers/{courier_id}/history
+
+Returns a paginated delivery history for a courier, optionally filtered by date range. Useful for generating courier performance reports and settlement calculations.
+
+**Permission required:** `couriers.read`
+
+### Path Parameters
+
+<ParamField path="courier_id" type="integer" required>Numeric courier ID.</ParamField>
+
+### Query Parameters
+
+<ParamField query="page" type="integer" default="1">Page number (1-indexed).</ParamField>
+<ParamField query="page_size" type="integer" default="20">Number of results per page.</ParamField>
+<ParamField query="start_date" type="string">ISO 8601 date — earliest delivery date to include.</ParamField>
+<ParamField query="end_date" type="string">ISO 8601 date — latest delivery date to include.</ParamField>
+
+```bash
+curl -X GET "https://api.zippi.co/api/v1/couriers/7/history?start_date=2024-01-01&end_date=2024-01-31&page=1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="object">Paginated history object.</ResponseField>
+<ResponseField name="data.items" type="array">Array of delivery records, each with order ID, status, timestamps, and delivery fee in centavos.</ResponseField>
+<ResponseField name="data.total" type="integer">Total number of matching deliveries.</ResponseField>
+<ResponseField name="data.page" type="integer">Current page.</ResponseField>
+<ResponseField name="data.page_size" type="integer">Page size used.</ResponseField>

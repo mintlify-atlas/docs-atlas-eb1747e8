@@ -1,0 +1,203 @@
+---
+title: "Local Development Setup for Zippi"
+sidebarTitle: "Local Dev Setup"
+description: "Run Zippi's Flask backend on port 5000 and Vite frontend on port 5174 side-by-side. Covers prerequisites, environment config, migrations, and seeding."
+---
+
+Zippi is a monorepo with a Flask API backend and a Vite/React+Vue frontend. The two services run on separate ports and communicate over HTTP — the frontend's `VITE_API_URL` must always point to the backend, not to the Vite dev server. Follow the steps below to get both processes running locally from a fresh clone.
+
+<Warning>
+  In production, `SECRET_KEY` and `JWT_SECRET_KEY` must each be at least **32
+  bytes** of random data. The app raises a `RuntimeError` at startup if either
+  key is too short when `APP_ENV=production`. Generate them with `python -c
+  "import secrets; print(secrets.token_hex(32))"`.
+</Warning>
+
+## Full Setup
+
+<Steps>
+  <Step title="Prerequisites">
+    Make sure the following are installed and available on your `PATH` before
+    you begin:
+
+    | Tool     | Minimum version | Notes                                  |
+    | -------- | --------------- | -------------------------------------- |
+    | Python   | 3.11+           | 3.12 is used in CI                     |
+    | Node.js  | 18+             | 20 is used in CI                       |
+    | MySQL    | 8.0+            | Create the `zippi_db` schema manually  |
+    | Redis    | 6+              | Required for Celery; default port 6379 |
+
+    Create the target MySQL database before running migrations:
+
+    ```sql
+    CREATE DATABASE zippi_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    ```
+  </Step>
+
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/CRISTIANCAMACH34/Zippi.git
+    cd Zippi
+    ```
+  </Step>
+
+  <Step title="Set up the Python virtual environment">
+    All backend commands are run from the `backend/` directory with the virtual
+    environment active.
+
+    <CodeGroup>
+      ```bash macOS / Linux
+      cd backend
+      python -m venv .venv
+      source .venv/bin/activate
+      pip install -r requirements-dev.txt
+      ```
+
+      ```powershell Windows
+      cd backend
+      python -m venv .venv
+      .venv\Scripts\Activate.ps1
+      pip install -r requirements-dev.txt
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Copy and configure the environment file">
+    Copy the example file to create your local `.env`. The app reads `.env`
+    from inside the `backend/` directory.
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Open `backend/.env` and set the three required secrets:
+
+    ```bash
+    # Minimum 32 bytes each — use the generator below
+    SECRET_KEY=<your-32-byte-secret>
+    JWT_SECRET_KEY=<your-32-byte-jwt-secret>
+
+    # Match your local MySQL credentials
+    DATABASE_URL=mysql+pymysql://root:<password>@127.0.0.1:3306/zippi_db
+    ```
+
+    Generate strong keys:
+
+    ```bash
+    python -c "import secrets; print(secrets.token_hex(32))"
+    ```
+  </Step>
+
+  <Step title="Run database migrations">
+    Apply all pending Alembic migrations to bring the schema up to date:
+
+    ```bash
+    python -m flask db upgrade
+    ```
+
+    After migrations, seed the base configuration data (service types, order
+    states, payment methods):
+
+    ```bash
+    python scripts/seed_data.py
+    ```
+  </Step>
+
+  <Step title="Start the backend API server">
+    `manage.py` reads `APP_HOST` and `APP_PORT` from `.env` and starts Flask on
+    `0.0.0.0:5000`.
+
+    ```bash
+    python manage.py
+    ```
+
+    The server exposes a built-in health endpoint immediately after startup:
+
+    ```
+    GET http://127.0.0.1:5000/health
+    → {"success": true, "status": "ok", "service": "Zippi"}
+    ```
+  </Step>
+
+  <Step title="Set up the frontend">
+    Open a **new terminal** and work from the `frontend/` directory at the repo
+    root.
+
+    ```bash
+    cd frontend
+    npm ci
+    cp .env.example .env
+    ```
+  </Step>
+
+  <Step title="Configure the frontend API URL">
+    Open `frontend/.env` and point the frontend at the running backend:
+
+    ```bash
+    VITE_API_URL=http://127.0.0.1:5000
+    ```
+
+    <Note>
+      Set `VITE_USE_MOCKS=true` in `frontend/.env` to run the UI with mock data
+      when you don't have the backend running. This is useful for pure UI
+      development or when working on frontend components in isolation.
+    </Note>
+  </Step>
+
+  <Step title="Start the frontend dev server">
+    ```bash
+    npm run dev
+    ```
+
+    Vite starts on port **5174** by default.
+  </Step>
+
+  <Step title="Verify the setup">
+    With both processes running you should be able to reach all services:
+
+    | Service        | URL                               | Description                      |
+    | -------------- | --------------------------------- | -------------------------------- |
+    | Backend API    | `http://127.0.0.1:5000/api/v1`    | REST endpoints for all modules   |
+    | Health check   | `http://127.0.0.1:5000/health`    | Liveness probe                   |
+    | Readiness check| `http://127.0.0.1:5000/ready`     | Confirms DB connectivity         |
+    | Frontend UI    | `http://127.0.0.1:5174`           | Vite dev server with hot reload  |
+
+    If the backend fails to start, check that:
+    - Your virtual environment is active (`which python` shows `.venv/`)
+    - `DATABASE_URL` in `backend/.env` matches your MySQL credentials
+    - The `zippi_db` database exists and MySQL is running
+    - Redis is running on `127.0.0.1:6379` (or `REDIS_URL` is updated)
+  </Step>
+</Steps>
+
+## Optional: Celery Worker
+
+Background jobs (order assignment timeouts, notifications) run in a separate
+Celery worker process. Redis must be running before starting the worker.
+
+```bash
+# From backend/ with the venv active
+python scripts/run_worker.py
+```
+
+The broker and result backend default to `redis://127.0.0.1:6379/0` — adjust
+`CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` in `.env` if your Redis
+instance listens elsewhere.
+
+## Optional: Create an Admin User
+
+Use `create_admin.py` to bootstrap an administrative account scoped to a
+specific branch or the whole platform:
+
+```bash
+python scripts/create_admin.py \
+  --email gerente@zippi.local \
+  --password "<SECRET>" \
+  --name "Gerente Centro" \
+  --role admin_sucursal \
+  --scope-type sucursal \
+  --scope-id 1 \
+  --scope-label "Sucursal Centro"
+```
+
+See `backend/docs/rbac_roles_matrix.md` for the full role and scope matrix.

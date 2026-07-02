@@ -1,0 +1,194 @@
+---
+title: "Audit Trail and Structured Logging in Zippi"
+sidebarTitle: "Audit Logging"
+description: "Zippi records every sensitive action with actor, timestamp, before/after state, and correlation ID. Access audit events via the API or export as CSV."
+---
+
+Zippi maintains three distinct observability planes — **audit trail** (immutable record of what changed and who changed it), **operational log** (what happened during the operation), and **technical logs** (why something failed). This page covers the audit trail and structured logging configuration. Never mix these planes: audit events are stored in the database and must not rotate; technical logs are ephemeral and should not be used for compliance.
+
+## What Is Audited
+
+The following action categories are always recorded with full context:
+
+| Category | Examples |
+|---|---|
+| Authentication events | Admin login, logout, failed login, session revocation |
+| Admin user management | Create admin, update role, change scope, deactivate account |
+| Order state transitions | Every FSM step with before state, after state, and reason |
+| Price and cost changes | Before/after values for product price, cost, taxes |
+| Cashier operations | Register open, register close, shift change |
+| Scope resolutions | `scope_filters` applied, scope normalization |
+| RBAC changes | Role assignment, permission grant/revoke |
+
+All audit events are written in the **same database transaction** as the change they record. If the audit write fails, the change rolls back — audit is never an afterthought appended after the fact.
+
+## Audit Record Shape
+
+Each `EventoAdministrador` row captures:
+
+```json
+{
+  "id_evento": 4821,
+  "actor_tipo": "admin",
+  "actor_nombre": "Operador Zippi",
+  "actor_email": null,
+  "id_admin_actor": 7,
+  "id_admin_objetivo": 12,
+  "objetivo_nombre": "Cajero Sucursal Norte",
+  "objetivo_email": null,
+  "tipo_evento": "admin.role_changed",
+  "descripcion": "Rol actualizado de cashier a kitchen_staff",
+  "payload_json": "{\"before\": {\"rol\": \"cashier\"}, \"after\": {\"rol\": \"kitchen_staff\"}, \"reason\": \"Cambio de turno\"}",
+  "fecha_evento": "2024-06-01T14:32:07"
+}
+```
+
+Key fields:
+- **`actor_tipo`** — `"admin"`, `"system"`, or `"environment"` (never a raw email)
+- **`tipo_evento`** — machine-readable action key (e.g. `admin.login`, `order.state_changed`)
+- **`descripcion`** — human-readable summary, safe for display
+- **`payload_json`** — structured JSON with `before`, `after`, and `reason` where applicable
+- **`fecha_evento`** — UTC timestamp, indexed for range queries
+
+The `append_admin_event` function is used inside an existing session (atomic), while `record_admin_event` opens its own session for fire-and-forget recording:
+
+```python
+# app/modules/auth/application/audit.py
+
+def append_admin_event(
+    session,
+    *,
+    event_type: str,
+    description: str,
+    actor: dict[str, Any] | None = None,
+    target_admin: Administrador | None = None,
+    payload: dict[str, Any] | None = None,
+) -> EventoAdministrador:
+    ...  # Adds EventoAdministrador to the session; caller commits.
+
+def record_admin_event(
+    *,
+    event_type: str,
+    description: str,
+    actor: dict[str, Any] | None = None,
+    target_admin: Administrador | None = None,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    ...  # Opens its own session, flushes, then commits.
+```
+
+## Accessing Audit Events
+
+<Note>
+Access to audit endpoints requires elevated permissions. These are not available to operational roles such as `cashier` or `delivery_driver`.
+</Note>
+
+**List events (paginated)**
+
+```bash
+GET /api/v1/auth/audit-events
+Authorization: Bearer <access_token>
+# Requires permission: audit.read
+```
+
+Query parameters: `page`, `page_size`, `tipo_evento`, `id_admin_actor`, `date_from`, `date_to`.
+
+**Export as CSV**
+
+```bash
+GET /api/v1/auth/audit-events/export
+Authorization: Bearer <access_token>
+# Requires permission: audit.export
+```
+
+Returns a downloadable CSV file with all matching events. Useful for compliance reviews and incident investigations.
+
+**Frontend-initiated audit events**
+
+The frontend can record user-initiated actions (e.g. explicit user clicks on sensitive operations) via:
+
+```bash
+POST /api/v1/auth/actions/log
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "action": "catalog.price_viewed",
+  "resource_type": "product",
+  "resource_id": "prod_00412",
+  "context": { "screen": "product_edit" }
+}
+```
+
+This endpoint **requires authentication** — unauthenticated callers receive 401. It was updated to prevent anonymous event injection.
+
+## PII Policy in Logs
+
+Audit records store **actor id and role**, not email addresses. Access logs similarly omit raw email. This is enforced at the application level: `actor_email` is stored only in `EventoAdministrador` for admin-management events where the email is the identity being managed, and it is never written to rotating technical logs.
+
+Rules:
+- Never log passwords, tokens, JWTs, or secrets — not even partially.
+- Phone numbers and full addresses are not written to technical logs; only resource IDs are used.
+- For before/after diffs of sensitive fields (prices, costs), the values are retained in `payload_json` within the audit table (which is protected by `audit.read` permission) but are never emitted to the log stream.
+
+## Structured Logging Configuration
+
+Zippi uses Python's standard `logging` module, configured via `app/config/logging.py`. Set `STRUCTURED_LOGS=true` in your environment to switch to JSON output:
+
+```bash
+LOG_LEVEL=INFO          # DEBUG | INFO | WARNING | ERROR | CRITICAL
+LOG_FILE=storage/logs/zippi.log   # Optional file output path
+STRUCTURED_LOGS=true    # Emit JSON lines instead of plain text
+```
+
+**Plain text format** (default for local dev):
+```
+2024-06-01 14:32:07 INFO [app.modules.auth] Admin login successful actor_id=7
+```
+
+**JSON format** (production / log aggregation):
+```json
+{
+  "level": "INFO",
+  "logger": "app.modules.auth",
+  "message": "Admin login successful",
+  "request_id": "req_a1b2c3",
+  "trace_id": "trace_d4e5f6"
+}
+```
+
+The `JsonFormatter` class attaches `request_id` and `trace_id` fields automatically when they are present on the log record. These are set by the request middleware and propagated through the call stack.
+
+```python
+# app/config/logging.py
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if hasattr(record, "request_id"):
+            payload["request_id"] = getattr(record, "request_id")
+        if hasattr(record, "trace_id"):
+            payload["trace_id"] = getattr(record, "trace_id")
+        return json.dumps(payload, ensure_ascii=False)
+```
+
+## Log Levels
+
+| Level | When to use |
+|---|---|
+| `DEBUG` | Development detail; disabled in production by default |
+| `INFO` | Operational milestones: order accepted, session started, payment confirmed |
+| `WARNING` | Recoverable anomaly: retry triggered, unexpected input normalized |
+| `ERROR` | Unhandled exception requiring attention |
+| `CRITICAL` | Data integrity risk or service-wide failure |
+
+Every log line must include the relevant module name, actor id (if applicable), resource id, and correlation id. Never log free-form text that could contain PII.
+
+## Retention and Compliance
+
+- **Audit events** (`eventos_administrador`) are **permanent**. They are never truncated, rotated, or deleted. Corrections are appended as new events — existing records are immutable.
+- **Technical logs** (file or stdout) rotate according to your log management setup (logrotate, CloudWatch, Datadog, etc.) and are **not** the source of truth for compliance purposes.
+- For regulated deployments, export audit events periodically via `GET /api/v1/auth/audit-events/export` and store the CSV in immutable object storage (e.g. S3 with Object Lock).

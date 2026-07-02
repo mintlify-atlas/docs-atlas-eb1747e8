@@ -1,0 +1,123 @@
+---
+title: "Security Configuration and Best Practices"
+sidebarTitle: "Security"
+description: "Key Zippi security controls: JWT hardening, multi-tenant isolation, rate limiting, CSP headers, IDOR prevention, and dependency management."
+---
+
+Zippi is built on a **fail-closed, defense-in-depth** model. Authorization lives exclusively in the backend; the frontend only reflects what the server permits. Every request that touches authentication, authorization, customer data, or money must satisfy role + permission + scope checks before any business logic runs.
+
+<Warning>
+A `demo123` bypass that allowed customers to log in without a real password was **removed** in production. If you are running an older deployment, upgrade immediately. The fix also enforces that the registration endpoint requires an explicit password — silent fallback credentials are no longer accepted.
+</Warning>
+
+<Accordion title="JWT and Session Security">
+  JWT tokens are signed with HS256 using `JWT_SECRET_KEY`. Both `SECRET_KEY` and `JWT_SECRET_KEY` **must be at least 32 bytes** (256 bits) in production. Zippi enforces this at startup and will refuse to start with a weak key.
+
+  ```bash
+  # Generate a secure key
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+
+  Recommended token lifetimes (from `.env.example`):
+
+  ```bash
+  JWT_ACCESS_TOKEN_EXPIRES_MINUTES=4       # Short-lived access tokens
+  JWT_REFRESH_TOKEN_EXPIRES_DAYS=30        # Refresh tokens — invalidated on logout
+  ADMIN_SESSION_IDLE_TIMEOUT_MINUTES=15    # Admin portal idle timeout
+  ```
+
+  Rules applied on every request:
+  - Signature and `exp` are validated on **every** authenticated request — never bypassed.
+  - Algorithm is fixed to HS256; `algorithm="none"` and `verify=False` are explicitly rejected.
+  - Logout invalidates the token client-side and increments `token_version` in the database so outstanding tokens for that admin cannot be replayed.
+  - Role and scope are re-read from the token, not re-fetched from the database on every request — the token is the authority.
+</Accordion>
+
+<Accordion title="Multi-Tenant Isolation">
+  Every database query in Zippi must include a `business_id` or `branch_id` scope filter. Filtering happens in the database — never in Python after the fact.
+
+  The `scope_filters` resolver normalizes the canonical `scope_type` (`business`, `business_branch`) before applying filters. A bug where `scope_type` was not normalized before filtering was corrected; the fix ensures that a `business_branch` admin cannot accidentally read data from a different branch or business.
+
+  Rules:
+  - No query without a scope guard — missing scope is a blocker finding.
+  - Cross-tenant data access (reading another business's orders, customers, or catalog) is treated as the most severe possible security issue.
+  - `row_in_business_scope` is called on every load-by-id to verify that the record belongs to the requesting tenant before returning it.
+</Accordion>
+
+<Accordion title="IDOR Prevention">
+  Zippi applies object-level authorization checks on every resource read. The most notable example is guest order access:
+
+  ```
+  GET /api/v1/customer/orders/{id}
+  ```
+
+  Guest reads require a signed `X-Guest-Order-Token` header. Without it, the endpoint returns 403 — even if the `order_id` is correct. This prevents enumeration attacks where a guest could read arbitrary orders by incrementing the ID.
+
+  For authenticated users, every resource load verifies both that the resource exists **and** that it belongs to the authenticated user's scope before returning data. A resource that exists but belongs to another tenant returns 404 (not 403) to avoid confirming its existence.
+</Accordion>
+
+<Accordion title="Rate Limiting and Abuse Prevention">
+  Login and registration endpoints are rate-limited to protect against brute-force and credential-stuffing attacks. The limits are applied at the middleware layer before the request reaches application logic.
+
+  Additional protections:
+  - Failed login attempts do not disclose whether the email exists in the system.
+  - The password reset flow is rate-limited independently.
+  - Public and cost-intensive endpoints (e.g. marketplace search) are also subject to rate limits.
+</Accordion>
+
+<Accordion title="CSP and Security Headers">
+  Zippi's backend middleware injects the following security headers on every response:
+
+  - **`Content-Security-Policy`** — restricts resource origins to prevent XSS injection from third-party scripts.
+  - **`X-Content-Type-Options: nosniff`** — prevents MIME-type sniffing.
+  - **`X-Frame-Options: DENY`** — blocks clickjacking via iframe embedding.
+  - **`Strict-Transport-Security`** — enforces HTTPS in production deployments.
+  - **`X-Correlation-Id`** — echoes a per-request trace identifier for log correlation.
+
+  CORS is configured with an explicit allowlist via `CORS_ALLOWED_ORIGINS`. Wildcard origins with credentials (`*` + `credentials: true`) are never permitted.
+</Accordion>
+
+<Accordion title="RBAC and Permission Validation">
+  Permissions are validated on every backend endpoint — the frontend role display is UX only. The permission model is **action-level**, not module-level:
+
+  - Separate permissions for `products.view`, `products.edit_price`, `products.edit_cost`, `orders.manage`, `audit.read`, `audit.export`, etc.
+  - Operational roles (`kitchen_staff`, `waiter`, `cashier`, `delivery_driver`) do **not** receive `orders.manage` — they hold only the specific action permissions they need.
+  - Price, cost, and tax changes require fine-grained permissions and are audited with before/after state and a reason field.
+  - `require_permission("permission.name")` is applied as a decorator on every route in `routes.py` — no permission check can be accidentally omitted at the route registration level.
+
+  Never trust client-supplied permission lists. The token carries role and scope; the backend resolves the permission set for that role server-side on every request.
+</Accordion>
+
+<Accordion title="Webhook Security (WhatsApp and Wompi)">
+  Both inbound webhook endpoints verify cryptographic signatures before processing any payload:
+
+  - **WhatsApp** (`POST /api/v1/whatsapp/webhook`): HMAC-SHA256 over the raw request body using `WHATSAPP_WEBHOOK_SECRET`, compared via `secrets.compare_digest`.
+  - **Wompi** (`POST /api/v1/payments/wompi/webhook`): SHA-256 over concatenated transaction properties + timestamp + `WOMPI_EVENTS_SECRET`, compared via `secrets.compare_digest`.
+
+  Both endpoints fail closed: if the secret is not configured, the request is rejected with an error before touching any business logic. Constant-time comparison prevents timing-based signature forging.
+</Accordion>
+
+<Accordion title="Secrets Management">
+  - All secrets live in `.env` files that are **gitignored**. The `.env.example` files contain only blank placeholders.
+  - If a secret is ever committed to git, treat it as compromised and rotate it immediately — git history is permanent.
+  - Secrets are never logged, included in error responses, or bundled into the frontend JavaScript build.
+  - In production, use a secrets manager (AWS Secrets Manager, HashiCorp Vault, etc.) and inject values as environment variables at runtime.
+  - CORS `allowed_origins` is explicitly enumerated — no wildcard in production.
+</Accordion>
+
+<Accordion title="Dependency Security">
+  Zippi resolves CVEs in both the Python and JavaScript dependency trees:
+
+  **Python (resolved):**
+  - `cryptography >= 48.0.1` — closes CVE-2026-26007, PYSEC-2026-35, and GHSA-537c-gmf6-5ccf.
+  - `bandit -r app -ll` runs in CI on every push to catch new issues.
+
+  **JavaScript (resolved via `npm audit fix`):**
+  - `axios`, `react-router`, `form-data`, `ws`, `tar`, and several transitive dependencies were updated.
+
+  <Note>
+    Two **moderate** severity vulnerabilities in `esbuild` and `vite` remain. These affect only the **development server** (`npm run dev`) and are not present in production builds. Fixing them requires upgrading to `vite@8` (a major breaking change) which is being evaluated separately and is not a blocker for production deployments.
+  </Note>
+
+  Run `pip-audit` and `npm audit` regularly and after any dependency update.
+</Accordion>

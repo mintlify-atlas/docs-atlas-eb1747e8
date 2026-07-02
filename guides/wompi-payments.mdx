@@ -1,0 +1,197 @@
+---
+title: "Wompi Payment Gateway Setup and Webhook Handling"
+sidebarTitle: "Wompi Payments"
+description: "Integrate Wompi for card, PSE, and cash payments. Configure sandbox vs production keys, handle TRANSACTION.UPDATED webhooks, and implement idempotent refunds."
+---
+
+Zippi uses [Wompi](https://wompi.co) as its payment gateway for card, PSE, and cash payments in the Colombian market. The integration builds a hosted checkout URL, redirects the customer, and listens for `transaction.updated` webhook events to confirm or cancel orders automatically.
+
+<Warning>
+**Never use floating-point values for monetary amounts.** All amounts in Zippi and Wompi are expressed as **integer centavos** (e.g. `16500` = COP $165.00). Storing or computing money as `float` introduces rounding errors that cause reconciliation failures and potential under- or overcharges.
+</Warning>
+
+## Environment Setup
+
+```bash
+# .env
+WOMPI_ENV=sandbox                          # "sandbox" or "production"
+WOMPI_PUBLIC_KEY=                          # pub_test_... (sandbox) or pub_prod_... (production)
+WOMPI_PRIVATE_KEY=                         # prv_test_... or prv_prod_...
+WOMPI_INTEGRITY_SECRET=                    # Used to sign checkout parameters
+WOMPI_EVENTS_SECRET=                       # Used to verify incoming webhook signatures
+
+WOMPI_BASE_URL=https://sandbox.wompi.co/v1        # Sandbox API base
+# For production, change to: https://production.wompi.co/v1
+
+WOMPI_REDIRECT_URL=http://localhost:5173/orders   # Where customer lands after payment
+WOMPI_WEBHOOK_PUBLIC_URL=http://localhost:5000/api/v1/payments/wompi/webhook
+```
+
+### Sandbox vs Production
+
+<Tabs>
+  <Tab title="Sandbox">
+    ```bash
+    WOMPI_ENV=sandbox
+    WOMPI_BASE_URL=https://sandbox.wompi.co/v1
+    WOMPI_PUBLIC_KEY=pub_test_<your_sandbox_public_key>
+    WOMPI_PRIVATE_KEY=prv_test_<your_sandbox_private_key>
+    WOMPI_INTEGRITY_SECRET=<sandbox_integrity_secret>
+    WOMPI_EVENTS_SECRET=<sandbox_events_secret>
+    ```
+    Use Wompi's [sandbox test cards](https://docs.wompi.co/docs/en/sandbox) to simulate approved, declined, and voided transactions without real charges.
+  </Tab>
+  <Tab title="Production">
+    ```bash
+    WOMPI_ENV=production
+    WOMPI_BASE_URL=https://production.wompi.co/v1
+    WOMPI_PUBLIC_KEY=pub_prod_<your_prod_public_key>
+    WOMPI_PRIVATE_KEY=prv_prod_<your_prod_private_key>
+    WOMPI_INTEGRITY_SECRET=<prod_integrity_secret>
+    WOMPI_EVENTS_SECRET=<prod_events_secret>
+    ```
+    Ensure `WOMPI_WEBHOOK_PUBLIC_URL` points to a stable, publicly reachable HTTPS endpoint before going live.
+  </Tab>
+</Tabs>
+
+## Integration Setup
+
+<Steps>
+  <Step title="Create a Wompi account and get your keys">
+    Register at [wompi.co](https://wompi.co), create an application, and copy the public key, private key, integrity secret, and events secret for your target environment (sandbox or production) into your `.env`.
+  </Step>
+
+  <Step title="Register the webhook URL in Wompi">
+    In the Wompi merchant dashboard, go to **Developers** → **Webhooks** and add:
+
+    ```
+    https://<your-domain>/api/v1/payments/wompi/webhook
+    ```
+
+    Select the **`transaction.updated`** event. Wompi will send a signed `POST` to this URL whenever a transaction status changes.
+  </Step>
+
+  <Step title="Initiate checkout from an order">
+    When a customer chooses Wompi as payment method, call the checkout creation endpoint. The backend builds a signed redirect URL pointing to `https://checkout.wompi.co/p/` with the integrity signature embedded:
+
+    ```bash
+    POST /api/v1/payments/<order_id>/wompi-checkout
+    Content-Type: application/json
+    Idempotency-Key: <client-generated-uuid>
+
+    { "channel": "admin" }   # valid values: "admin", "whatsapp", "app"
+    ```
+
+    Response includes `checkout_url` — redirect the customer to that URL. Valid channels are `admin`, `whatsapp`, and `app`.
+  </Step>
+
+  <Step title="Customer completes payment">
+    Wompi hosts the payment form. After the customer pays (or the link expires), Wompi redirects to `WOMPI_REDIRECT_URL` and sends a webhook event to your backend.
+  </Step>
+
+  <Step title="Process the webhook">
+    Zippi verifies the signature, matches the reference to an internal order, and transitions the order state:
+
+    - `APPROVED` → order moves to `confirmed`, payment record created
+    - `DECLINED` → order moves to `cancelado`, no payment record
+    - `VOIDED` → treated as `expired`
+    - `ERROR` → transaction marked `error`, order stays in `pending_payment`
+  </Step>
+</Steps>
+
+## Webhook Payload Structure
+
+Wompi sends a `POST` request with the following JSON body:
+
+```json
+{
+  "event": "transaction.updated",
+  "data": {
+    "transaction": {
+      "id": "txn_abc123",
+      "reference": "WOMPI-ORD001-20240601123045-A1B2C3",
+      "status": "APPROVED",
+      "amount_in_cents": 16500,
+      "currency": "COP"
+    }
+  },
+  "timestamp": "1717249845",
+  "signature": {
+    "properties": [
+      "transaction.id",
+      "transaction.status",
+      "transaction.amount_in_cents"
+    ],
+    "checksum": "3e4f...sha256hex...in_uppercase"
+  }
+}
+```
+
+The `X-Event-Checksum` header may also carry the checksum value. Zippi reads from whichever is present.
+
+## Signature Verification
+
+Zippi rebuilds the expected checksum using `WOMPI_EVENTS_SECRET` and compares with `secrets.compare_digest` to prevent timing attacks:
+
+```python
+# app/modules/payments/application/wompi_gateway.py  (simplified)
+raw_signature = "".join(
+    resolve_property(data, path) for path in signature["properties"]
+)
+raw_signature += f"{timestamp}{settings.wompi_events_secret}"
+expected = hashlib.sha256(raw_signature.encode("utf-8")).hexdigest().upper()
+
+if not secrets.compare_digest(expected, checksum.upper()):
+    raise HttpError("La firma del webhook de Wompi no es valida", status_code=400)
+```
+
+If `WOMPI_EVENTS_SECRET` is not configured the endpoint returns HTTP 500 immediately — it will never accept an unverifiable event.
+
+## Idempotency
+
+Both checkout creation and webhook processing are idempotent:
+
+- **Checkout creation**: pass an `Idempotency-Key` header. A second call with the same key returns the original response and creates no extra database rows. A second call with a different payload but the same key returns HTTP 409.
+- **Webhook delivery**: if Wompi delivers the same `transaction.id` twice, the second delivery returns `{"duplicate": true}` without re-running the state machine or creating a second payment record.
+
+This is validated by unit tests in `backend/tests/unit/test_wompi_payments.py`.
+
+## Testing the Webhook Locally
+
+Use the fixture script to send a correctly signed webhook to your local backend:
+
+```bash
+python backend/scripts/send_wompi_webhook_fixture.py \
+  --reference "WOMPI-ORD001-20240601123045-A1B2C3" \
+  --amount-in-cents 16500 \
+  --status APPROVED \
+  --transaction-id txn_local_test_001 \
+  --events-secret "$WOMPI_EVENTS_SECRET"
+```
+
+To preview the payload without sending:
+
+```bash
+python backend/scripts/send_wompi_webhook_fixture.py \
+  --reference "WOMPI-ORD001-20240601123045-A1B2C3" \
+  --amount-in-cents 16500 \
+  --events-secret "$WOMPI_EVENTS_SECRET" \
+  --print-only
+```
+
+## Transaction State Mapping
+
+Wompi statuses are normalized to internal states before persisting:
+
+| Wompi status | Internal state |
+|---|---|
+| `CREATED` | `created` |
+| `PENDING` | `pending` |
+| `APPROVED` | `approved` |
+| `DECLINED` | `declined` |
+| `VOIDED` | `expired` |
+| `ERROR` | `error` |
+
+## Reconciliation
+
+Every Wompi checkout carries a `reference` in the format `WOMPI-{order_code}-{timestamp}-{hex_suffix}`. The cashier module matches incoming webhook events to internal `TransaccionPagoPedido` rows by this reference, links them to the corresponding `PagoPedido`, and updates the parent order's payment status. Amount mismatches (where the webhook `amount_in_cents` differs from the expected total) mark the transaction as `error` and keep the order in `pending_payment` for manual review.

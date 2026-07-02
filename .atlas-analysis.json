@@ -1,23 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Zippi",
+  "projectType": "saas",
+  "projectName": "Zippi",
+  "projectDescription": "Zippi is a full-stack delivery and business operations platform with role-based portals for customers, couriers, business owners, kitchen staff, cashiers, waiters, and platform administrators.",
   "theme": "luma",
-  "colors": {
-    "primary": "#FF5722",
-    "light": "#FF7043",
-    "dark": "#E64A19"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/CRISTIANCAMACH34/Zippi"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/CRISTIANCAMACH34/Zippi"
-    }
-  },
+  "primaryColor": "#FF5722",
+  "lightColor": "#FF7043",
+  "darkColor": "#E64A19",
   "navigation": {
     "tabs": [
       {
@@ -122,5 +110,56 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "16-role RBAC system with fine-grained action-level permissions",
+    "Multi-tenant scoping (global → country → city → business → branch)",
+    "13-state order state machine with exception handling",
+    "Business portal with catalog, orders, branches, and settlements",
+    "Operative portals for kitchen, cashier, and waiter roles",
+    "Customer marketplace with guest and registered checkout",
+    "WhatsApp bot integration for customer ordering",
+    "Wompi payment gateway integration with webhook verification",
+    "Celery background jobs with Redis broker",
+    "Comprehensive audit trail and structured logging"
+  ],
+  "publicApiSurface": [
+    "POST /api/v1/auth/login",
+    "POST /api/v1/auth/refresh",
+    "POST /api/v1/auth/logout",
+    "GET /api/v1/auth/me",
+    "GET /api/v1/auth/admins",
+    "POST /api/v1/auth/admins",
+    "GET /api/v1/auth/audit-events",
+    "GET /api/v1/marketplace/businesses",
+    "GET /api/v1/marketplace/businesses/:slug",
+    "GET /api/v1/marketplace/businesses/:slug/products",
+    "GET /api/v1/marketplace/products/:id",
+    "GET /api/v1/business-categories",
+    "POST /api/v1/auth/customer/login",
+    "POST /api/v1/auth/customer/register",
+    "GET /api/v1/customer/home",
+    "GET /api/v1/customer/profile",
+    "GET /api/v1/customer/orders",
+    "GET /api/v1/customer/orders/:id",
+    "POST /api/v1/orders/guest",
+    "POST /api/v1/orders/customer",
+    "GET /api/v1/business/dashboard",
+    "GET /api/v1/business/orders",
+    "PATCH /api/v1/business/orders/:id/status",
+    "GET /api/v1/business/products",
+    "POST /api/v1/business/products",
+    "PUT /api/v1/business/products/:id",
+    "GET /api/v1/business/options",
+    "GET /api/v1/business/branches",
+    "POST /api/v1/business/branches/request",
+    "GET /api/v1/business/settlements",
+    "GET /api/v1/business/analytics",
+    "GET /api/v1/cashier",
+    "GET /api/v1/couriers",
+    "GET /api/v1/city",
+    "POST /api/v1/payments/wompi/webhook",
+    "GET /api/v1/reports",
+    "GET /api/v1/dashboard"
+  ]
 }

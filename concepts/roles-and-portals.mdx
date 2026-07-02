@@ -1,0 +1,153 @@
+---
+title: "Roles and Portal Surfaces in Zippi"
+sidebarTitle: "Roles & Portals"
+description: "Zippi defines 16 roles organized across 6 portal surfaces. Each role has a dedicated home route, module set, and permission scope."
+---
+
+Every user in Zippi is assigned exactly one role. That role determines which portal surface is rendered in the frontend, which API endpoints are accessible, which database rows are visible through the tenant scope filter, and which actions are permitted. The role catalog is defined in `backend/app/modules/auth/domain/rbac.py` and is the single source of truth — roles cannot be invented at runtime.
+
+<Tip>
+  The role controls the **entire UI experience**, not just a permission gate. A `kitchen_staff` user enters a command-ticket screen with a priority timer and alarm — not a business dashboard. A `cashier` lands on the till screen with expected-vs-received amounts and shift closure. Designing a portal means designing the right tool for that role's job, not a permission-restricted version of a generic admin UI.
+</Tip>
+
+## All 16 Roles
+
+| Role key | Label | Surface | home_route | Default scope |
+|----------|-------|---------|-----------|---------------|
+| `super_admin` | Super administrador | `superadmin_panel` | `/app/superadmin` | `global` |
+| `platform_admin` | Administrador plataforma | `superadmin_panel` | `/app/superadmin` | `global` |
+| `country_admin` | Administrador país | `admin_panel` | `/app/admin/country` | `country` |
+| `city_admin` | Administrador ciudad | `admin_panel` | `/app/admin/city` | `city` |
+| `zippi_branch_admin` | Administrador sucursal Zippi | `admin_panel` | `/app/admin/branch` | `zippi_branch` |
+| `operations_admin` | Administrador operaciones | `admin_panel` | `/app/admin` | `city` |
+| `finance_admin` | Administrador financiero | `admin_panel` | `/app/admin` | `city` |
+| `support_agent` | Agente soporte | `admin_panel` | `/admin-platform/support` | `city` |
+| `business_owner` | Dueño de negocio | `business_portal` | `/app/business` | `business_group` |
+| `business_admin` | Administrador negocio | `business_portal` | `/app/business` | `business` |
+| `business_branch_admin` | Administrador sucursal negocio | `business_branch_portal` | `/app/business/branch` | `business_branch` |
+| `kitchen_staff` | Cocina | `kitchen_app` | `/app/business/kitchen` | `business_branch` |
+| `cashier` | Cajero | `cashier_app` | `/app/business/cashier` | `business_branch` |
+| `waiter` | Mesero | `waiter_app` | `/app/business/waiter` | `business_branch` |
+| `delivery_driver` | Domiciliario | `courier_app` | `/app/driver` | `self` |
+| `customer` | Cliente | `client_app` | `/app/cliente` | `self` |
+
+## Portal Surfaces
+
+### `superadmin_panel` — Global Platform Control
+
+The superadmin panel hosts `super_admin` and `platform_admin`. Both roles receive `_all_permissions()` — every permission in the system. The surface provides global visibility across all countries, cities, businesses, and tenants.
+
+**Roles:** `super_admin`, `platform_admin`
+
+**Modules:** all modules in `MODULES` (sorted alphabetically), including administration, audit, countries, cities, Zippi branches, business groups, businesses, orders, couriers, dispatch, payments, liquidations, settings, and more.
+
+**Key distinction:** `super_admin` has true root access and full audit trail requirements. `platform_admin` shares the same permission set but is intended for platform configuration work rather than security-sensitive operations.
+
+---
+
+### `admin_panel` — Geographic Operations
+
+The admin panel serves six roles that operate at different geographic levels of the Zippi hierarchy. Each role is scoped to a specific geography — from country down to a single Zippi branch — and sees only the data within that scope.
+
+**Roles:** `country_admin`, `city_admin`, `zippi_branch_admin`, `operations_admin`, `finance_admin`, `support_agent`
+
+| Role | Scope | Focus |
+|------|-------|-------|
+| `country_admin` | country | All cities, businesses, operations and finances within one country |
+| `city_admin` | city | Full city operations: businesses, couriers, dispatch, payments, settlements |
+| `zippi_branch_admin` | zippi_branch | Operations for one Zippi-owned branch (not business branches) |
+| `operations_admin` | city | Orders, dispatch, fleet, evidence, incidents — **no financial access** |
+| `finance_admin` | city | Wompi, cash register, liquidations, audit — **no dispatch or catalog** |
+| `support_agent` | city | Tickets, WhatsApp, clients, incidents, evidence — **no money** |
+
+**Modules (OPERATIONS_MODULES):** `dashboard`, `admin_app`, `orders`, `clients`, `couriers`, `dispatch`, `businesses`, `business_branches`, `pricing`, `zones`, `evidence`, `cashier`, `payments`, `liquidations`, `coupons`, `support`, `incidents`, `reports`, `notifications`
+
+---
+
+### `business_portal` — Brand Management
+
+The business portal is for users who own or administer one or more brands. It combines a business dashboard with operational tools and financial reporting.
+
+**Roles:** `business_owner`, `business_admin`
+
+| Role | Scope | Distinction |
+|------|-------|------------|
+| `business_owner` | `business_group` | Controls a full business group (multiple brands/branches), has `business_groups.*` permissions |
+| `business_admin` | `business` | Administers a single brand and its branches; no `business_groups.*` permissions |
+
+**Modules (BUSINESS_MODULES):** `dashboard`, `business_portal`, `businesses`, `business_branches`, `catalog`, `product_options`, `orders`, `kitchen`, `cashier`, `waiter`, `payments`, `liquidations`, `coupons`, `support`, `reports`, `notifications`
+
+---
+
+### `business_branch_portal` — Local Operations
+
+The branch portal covers the day-to-day operation of one physical location. Four roles share this surface, each entering a dramatically different focused screen for their specific job.
+
+**Roles:** `business_branch_admin`, `kitchen_staff`, `cashier`, `waiter`
+
+| Role | Experience | Permitted actions |
+|------|-----------|------------------|
+| `business_branch_admin` | Full branch admin panel | All branch operations including catalog, orders, kitchen, cashier, waiter, payments, reports |
+| `kitchen_staff` | Command-ticket screen with timer and alarm | `orders.prepare`, `orders.pack`, `catalog.edit_availability` |
+| `cashier` | Till screen (open/close shift, collect payments, arqueo) | `orders.close`, `orders.collect_payment`, `cashier.open`, `cashier.close`, `cashier.reconcile` |
+| `waiter` | Table map and order intake | `orders.accept`, `orders.reject`, `waiter.*` |
+
+**Modules (BUSINESS_BRANCH_MODULES):** `business_branch_portal`, `orders`, `kitchen`, `cashier`, `waiter`, `catalog`, `product_options`, `payments`, `support`, `reports`
+
+---
+
+### `courier_app` — Delivery App
+
+The courier app is the mobile experience for `delivery_driver`. The scope type is `self` — the driver sees only their own assigned deliveries.
+
+**Role:** `delivery_driver`
+
+**Modules:** `courier_app`
+
+**Permissions:** `orders.read`, `orders.pickup`, `orders.transit`, `orders.deliver`, `orders.mark_failed`, `orders.mark_absent`, `couriers.read`, `evidence.read`, `evidence.manage`, `incidents.read`
+
+The courier app is designed to operate efficiently on a mobile device: receive assignment, navigate to pickup, mark states, upload photo evidence, and report incidents — without access to any other business data.
+
+---
+
+### `client_app` — Customer Marketplace
+
+The client app is the consumer-facing surface. The scope type is `self` — the customer sees only their own orders and profile.
+
+**Role:** `customer`
+
+**Modules:** `client_app`
+
+**Permissions:** `orders.read`, `clients.read`, `incidents.read`, `incidents.manage`
+
+Note that `customer` does **not** have `orders.manage`. Customers view their orders and create support incidents — they cannot transition order states, which is an operator action. Orders can also be created via the WhatsApp bot channel, but those orders enter the same state machine and are subject to the same scope rules.
+
+## Access Profile Construction
+
+When a user authenticates, `build_access_profile()` assembles the complete JWT payload from the role definition:
+
+```python
+# backend/app/modules/auth/domain/rbac.py
+def build_access_profile(
+    *,
+    role: object,
+    scope_type: object = None,
+    scope_id: object = None,
+    scope_label: object = None,
+) -> dict[str, Any]:
+    definition = get_role_definition(role)
+    resolved_scope_type = normalize_scope_key(scope_type or definition["default_scope_type"])
+    return {
+        "role": definition["key"],
+        "role_label": definition["label"],
+        "surface": definition["surface"],
+        "home_route": definition["home_route"],
+        "modules": definition["modules"],
+        "permissions": expand_permissions(definition["permissions"]),
+        "scope_type": resolved_scope_type,
+        "scope_id": scope_id,
+        "scope_label": str(scope_label or "").strip() or None,
+    }
+```
+
+The `expand_permissions()` call resolves implied permissions (for example, `catalog.manage` expands to all fine-grained `catalog.*` action permissions) before the payload is embedded in the JWT. See [Permissions](/concepts/permissions) for the full implication model.

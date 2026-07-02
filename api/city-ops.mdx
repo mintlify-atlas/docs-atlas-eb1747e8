@@ -1,0 +1,211 @@
+---
+title: "City Operations API: Dispatch, Zones, and Fleet"
+sidebarTitle: "City Ops"
+description: "City-level operational endpoints for managing dispatch, delivery zones, service pricing, branch requests, and incident oversight. Requires city_admin scope."
+---
+
+The City Operations API surfaces the administrative actions available to city-level operators in Zippi's pilot territory (Bogotá, `city_id: 11001`). It handles the approval workflow for new branch and business onboarding requests, and provides the operational alert feed used by the dispatch dashboard. All endpoints require an authenticated user with the `city_admin`, `super_admin`, or `platform_admin` role — defined in `constants.py` as the `APPROVER_ROLES` frozenset.
+
+## Roles and Scope
+
+Only users whose role belongs to `APPROVER_ROLES` may call approve or reject actions:
+
+| Role | Scope |
+|---|---|
+| `city_admin` | City-scoped — operates within an assigned city |
+| `super_admin` | Global — unrestricted access across all cities |
+| `platform_admin` | Global — same as `super_admin` for city ops purposes |
+
+All endpoints use `@require_auth` and resolve the caller via `get_current_user()`. Role enforcement is applied at the service layer.
+
+## Default Service Fees
+
+Service fees are configured via environment variables and applied when creating service-type pricing rules. All values are in **centavos** (integer COP × 100):
+
+| Variable | Default | Service Type |
+|---|---|---|
+| `DEFAULT_SERVICE_FEE_FOOD` | `4000` | Food delivery (restaurants, dark kitchens) |
+| `DEFAULT_SERVICE_FEE_FREE_ORDER` | `5000` | Free-form / open orders |
+| `DEFAULT_SERVICE_FEE_BILL_PAYMENT` | `5000` | Bill and utility payments |
+| `DEFAULT_SERVICE_FEE_COPIES` | `5000` | Document copies and prints |
+| `DEFAULT_SERVICE_FEE_CUSTOM_ERRAND` | `6000` | Custom errands and miscellaneous runs |
+
+<Note>
+  When `REQUIRE_LOCATION_FOR_DELIVERY=true` (default: `false`), the dispatch layer will reject any delivery order that does not carry a validated GPS coordinate for the drop-off address. Set this to `true` in production environments to improve geo-routing accuracy.
+</Note>
+
+---
+
+## GET /api/v1/city-ops/alerts
+
+Returns the city-level operational alert feed. By default only pending (unresolved) alerts are returned.
+
+**Authentication required.** Role-level enforcement is applied at the service layer.
+
+### Query Parameters
+
+<ParamField query="pending" type="boolean" default="true">
+  When `true` (default), only unresolved alerts are returned. Pass `pending=false` to retrieve all alerts including resolved ones.
+</ParamField>
+
+```bash
+curl -X GET "https://api.zippi.co/api/v1/city-ops/alerts?pending=true" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="array">List of alert objects, each containing `alert_id`, `type`, `description`, `severity`, `created_at`, and `resolved_at` (null if still open).</ResponseField>
+
+---
+
+## GET /api/v1/city-ops/branch-requests
+
+Lists all pending branch activation requests submitted by business operators. Branch requests must be reviewed and approved (or rejected) before the branch goes live on the platform.
+
+**Authentication required.**
+
+```bash
+curl -X GET https://api.zippi.co/api/v1/city-ops/branch-requests \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="array">List of branch request objects, each including `branch_id`, `branch_name`, `business_name`, `city_id`, `submitted_at`, and `status`.</ResponseField>
+
+---
+
+## POST /api/v1/city-ops/branch-requests/{branch_id}/approve
+
+Approves a branch activation request and makes the branch active on the platform. An optional internal note can be attached for audit purposes.
+
+**Authentication required.** Caller must be in `APPROVER_ROLES`.
+
+### Path Parameters
+
+<ParamField path="branch_id" type="string" required>The ID of the branch request to approve.</ParamField>
+
+### Body
+
+<ParamField body="note" type="string">Optional approval note visible in the audit log (e.g. `"Documents verified by ops team"`).</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/city-ops/branch-requests/br_abc123/approve \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"note": "All documents verified. Branch goes live."}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Updated branch record with `status: "active"` and `approved_at` timestamp.</ResponseField>
+
+---
+
+## POST /api/v1/city-ops/branch-requests/{branch_id}/reject
+
+Rejects a branch activation request. A rejection reason is stored and communicated back to the business operator.
+
+**Authentication required.** Caller must be in `APPROVER_ROLES`.
+
+### Path Parameters
+
+<ParamField path="branch_id" type="string" required>The ID of the branch request to reject.</ParamField>
+
+### Body
+
+<ParamField body="reason" type="string">
+  Rejection reason shown to the operator (also accepted as `note`). If both are provided, `reason` takes precedence.
+</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/city-ops/branch-requests/br_abc123/reject \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Missing health permit documentation."}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Updated branch record with `status: "rejected"` and `rejected_at` timestamp.</ResponseField>
+
+---
+
+## GET /api/v1/city-ops/business-requests
+
+Lists all pending business onboarding requests submitted for city-level review. A business request covers the parent brand entity; individual branch requests are managed separately via `/branch-requests`.
+
+**Authentication required.**
+
+```bash
+curl -X GET https://api.zippi.co/api/v1/city-ops/business-requests \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Whether the request succeeded.</ResponseField>
+<ResponseField name="data" type="array">List of business request objects, each including `business_id`, `business_name`, `city_id`, `submitted_at`, and `status`.</ResponseField>
+
+---
+
+## POST /api/v1/city-ops/business-requests/{business_id}/approve
+
+Approves a business onboarding request, enabling the business to operate under the assigned city.
+
+**Authentication required.** Caller must be in `APPROVER_ROLES`.
+
+### Path Parameters
+
+<ParamField path="business_id" type="string" required>The ID of the business request to approve.</ParamField>
+
+### Body
+
+<ParamField body="note" type="string">Optional internal note logged against the approval action.</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/city-ops/business-requests/biz_xyz789/approve \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"note": "Business registered and verified with chamber of commerce."}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Updated business record with `status: "active"` and `approved_at` timestamp.</ResponseField>
+
+---
+
+## POST /api/v1/city-ops/business-requests/{business_id}/reject
+
+Rejects a business onboarding request with a required reason that is surfaced to the business owner.
+
+**Authentication required.** Caller must be in `APPROVER_ROLES`.
+
+### Path Parameters
+
+<ParamField path="business_id" type="string" required>The ID of the business request to reject.</ParamField>
+
+### Body
+
+<ParamField body="reason" type="string">
+  Rejection reason communicated to the business owner. Also accepted as `note`; `reason` takes precedence when both are provided.
+</ParamField>
+
+```bash
+curl -X POST https://api.zippi.co/api/v1/city-ops/business-requests/biz_xyz789/reject \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Incomplete tax identification documents."}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean">Always `true` on success.</ResponseField>
+<ResponseField name="data" type="object">Updated business record with `status: "rejected"` and `rejected_at` timestamp.</ResponseField>

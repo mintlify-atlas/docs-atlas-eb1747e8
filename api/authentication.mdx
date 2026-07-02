@@ -1,0 +1,678 @@
+---
+title: "Authentication API: Login, Token Refresh, and Session"
+sidebarTitle: "Authentication"
+description: "Zippi uses JWT access/refresh tokens. Login returns both; access tokens expire in minutes, refresh tokens in days. Pass Bearer token in Authorization header."
+---
+
+Zippi's authentication layer is built on JWT (JSON Web Tokens). Every login — whether for a platform admin or a customer — issues a short-lived **access token** and a longer-lived **refresh token**. The access token is used in the `Authorization: Bearer <access_token>` header on every protected request. When the access token expires, exchange the refresh token for a new one without re-entering credentials. Refresh sessions also enforce an **idle timeout**: if no refresh call is made within the configured idle window (default 15 minutes), the session is invalidated and the user must log in again.
+
+## Token lifetimes
+
+These values are controlled by environment variables and default to the values shown below.
+
+| Setting | Environment variable | Default |
+|---|---|---|
+| Access token TTL | `JWT_ACCESS_TOKEN_EXPIRES_MINUTES` | `4` minutes |
+| Refresh token TTL | `JWT_REFRESH_TOKEN_EXPIRES_DAYS` | `30` days |
+| Admin idle timeout | `ADMIN_SESSION_IDLE_TIMEOUT_MINUTES` | `15` minutes |
+
+<Note>
+  The `JWT_ACCESS_TOKEN_EXPIRES_MINUTES` default of **4 minutes** is intentionally short. Clients must call `POST /api/v1/auth/refresh` before the access token expires to maintain a continuous session. The refresh endpoint checks activity within `ADMIN_SESSION_IDLE_TIMEOUT_MINUTES` (default 15 minutes) — if the session has been idle beyond that window, the server rejects the refresh even though the refresh token itself has not yet expired.
+</Note>
+
+## Authorization header
+
+```http
+Authorization: Bearer <access_token>
+```
+
+All endpoints marked **requires auth** or **requires permission** must include this header.
+
+---
+
+## Admin / platform endpoints
+
+### POST /api/v1/auth/login
+
+Authenticates a platform administrator (database admin or environment-seed admin) and issues an access/refresh token pair.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "admin@zippi.app",
+    "password": "s3cur3P@ss"
+  }'
+```
+
+**Request body**
+
+<ParamField body="email" type="string" required>
+  The admin's email address. Case-insensitive; trimmed and lowercased before lookup.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The admin's password. Must be non-empty.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "token_type": "Bearer",
+    "expires_at": "2024-11-15T12:04:00+00:00",
+    "access_expires_at": "2024-11-15T12:04:00+00:00",
+    "refresh_expires_at": "2024-12-15T12:00:00+00:00",
+    "idle_timeout_minutes": 15,
+    "access_ttl_minutes": 4,
+    "user": {
+      "id": 1,
+      "name": "Ana García",
+      "email": "admin@zippi.app",
+      "role": "city_admin",
+      "role_label": "Administrador ciudad",
+      "surface": "admin_panel",
+      "home_route": "/app/admin/city",
+      "permissions": ["dashboard.read", "orders.read", "orders.manage"],
+      "modules": ["dashboard", "orders", "clients"],
+      "scope_type": "city",
+      "scope_id": 3,
+      "scope_label": "Bogotá",
+      "token_version": 1,
+      "source": "database"
+    }
+  }
+}
+```
+
+<ResponseField name="access_token" type="string">
+  Short-lived JWT to pass in the `Authorization: Bearer` header.
+</ResponseField>
+
+<ResponseField name="refresh_token" type="string">
+  Long-lived JWT used to obtain a new access token via the refresh endpoint.
+</ResponseField>
+
+<ResponseField name="token_type" type="string">
+  Always `"Bearer"`.
+</ResponseField>
+
+<ResponseField name="access_expires_at" type="string">
+  ISO 8601 UTC timestamp when the access token expires.
+</ResponseField>
+
+<ResponseField name="refresh_expires_at" type="string">
+  ISO 8601 UTC timestamp when the refresh token expires.
+</ResponseField>
+
+<ResponseField name="idle_timeout_minutes" type="integer">
+  Maximum inactivity window in minutes before the session is invalidated.
+</ResponseField>
+
+<ResponseField name="access_ttl_minutes" type="integer">
+  Configured lifetime of the access token in minutes.
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  The authenticated admin's access profile. See [Access profile object](#access-profile-object) below.
+</ResponseField>
+
+---
+
+### POST /api/v1/auth/refresh
+
+Exchanges a valid, non-idle refresh token for a new access token. The session `last_seen` timestamp is updated on each successful call, keeping the session alive as long as calls occur within `ADMIN_SESSION_IDLE_TIMEOUT_MINUTES`.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  }'
+```
+
+**Request body**
+
+<ParamField body="refresh_token" type="string" required>
+  The refresh token issued at login or from a previous refresh call.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "token_type": "Bearer",
+    "expires_at": "2024-11-15T12:08:00+00:00",
+    "access_expires_at": "2024-11-15T12:08:00+00:00",
+    "refresh_expires_at": "2024-12-15T12:00:00+00:00",
+    "idle_timeout_minutes": 15,
+    "access_ttl_minutes": 4,
+    "user": { "...": "same shape as login response" }
+  }
+}
+```
+
+<ResponseField name="access_token" type="string">
+  New short-lived access token.
+</ResponseField>
+
+<ResponseField name="refresh_token" type="string">
+  Rotated refresh token. The previous refresh token is invalidated. Sending the old token again after rotation results in a `401` and destroys the session (theft-detection).
+</ResponseField>
+
+---
+
+### POST /api/v1/auth/logout
+
+Requires authentication. Invalidates the server-side refresh session associated with the provided refresh token. The access token remains cryptographically valid until it expires, but the session will no longer issue new tokens.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/auth/logout \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  }'
+```
+
+**Request body**
+
+<ParamField body="refresh_token" type="string">
+  The refresh token to invalidate. If omitted or invalid, the call still succeeds (logout is always safe).
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "closed": true,
+    "closed_at": "2024-11-15T12:01:00+00:00"
+  }
+}
+```
+
+<ResponseField name="closed" type="boolean">
+  Always `true` on a successful logout.
+</ResponseField>
+
+<ResponseField name="closed_at" type="string">
+  ISO 8601 UTC timestamp of when the session was closed.
+</ResponseField>
+
+---
+
+### GET /api/v1/auth/me
+
+Requires authentication. Returns the current user's full access profile, freshly resolved from the database. Useful for verifying token validity and refreshing the client-side permission set.
+
+```bash
+curl https://api.zippi.app/api/v1/auth/me \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": 1,
+      "name": "Ana García",
+      "email": "admin@zippi.app",
+      "role": "city_admin",
+      "role_label": "Administrador ciudad",
+      "role_description": "Gestiona la operacion, negocios, domiciliarios, soporte y finanzas de una ciudad.",
+      "surface": "admin_panel",
+      "home_route": "/app/admin/city",
+      "permissions": ["dashboard.read", "orders.read", "orders.manage"],
+      "modules": ["dashboard", "orders", "clients"],
+      "scope_type": "city",
+      "scope_id": 3,
+      "scope_label": "Bogotá",
+      "business_id": null,
+      "branch_id": null,
+      "token_version": 1,
+      "source": "database"
+    }
+  }
+}
+```
+
+<ResponseField name="user" type="object">
+  Full access profile. See [Access profile object](#access-profile-object) below.
+</ResponseField>
+
+---
+
+### POST /api/v1/auth/actions/log
+
+Requires authentication. Records a client-side UI action for audit and analytics purposes. This endpoint is fire-and-forget; the response does not block the UI action.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/auth/actions/log \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "click",
+    "label": "Export orders CSV",
+    "path": "/reports/orders"
+  }'
+```
+
+**Request body**
+
+<ParamField body="action" type="string">
+  A short string identifying the action type (e.g., `"click"`, `"view"`, `"submit"`). Defaults to `"click"` if omitted.
+</ParamField>
+
+<ParamField body="label" type="string">
+  Human-readable label for the action. Truncated to 120 characters.
+</ParamField>
+
+<ParamField body="path" type="string">
+  The current frontend route or URL path. Truncated to 240 characters. Falls back to the `Referer` header if omitted.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": { "logged": true }
+}
+```
+
+---
+
+### GET /api/v1/auth/audit-events
+
+Requires `audit.read` permission. Returns a paginated list of administrative audit events, with filtering by event type, actor, target, and date range.
+
+```bash
+curl "https://api.zippi.app/api/v1/auth/audit-events?page=1&page_size=25&event_type=login_success" \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Query parameters**
+
+<ParamField query="page" type="integer" default="1">
+  Page number (1-based).
+</ParamField>
+
+<ParamField query="page_size" type="integer" default="25">
+  Items per page. Maximum `100`.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Full-text filter across description, event type, actor name/email, and target name/email.
+</ParamField>
+
+<ParamField query="event_type" type="string">
+  Filter by exact event type (e.g., `login_success`, `admin_created`, `admin_deactivated`, `sessions_revoked`, `audit_exported`).
+</ParamField>
+
+<ParamField query="actor_id" type="integer">
+  Filter events where this admin ID is the actor.
+</ParamField>
+
+<ParamField query="target_id" type="integer">
+  Filter events where this admin ID is the target/subject.
+</ParamField>
+
+<ParamField query="start_date" type="string">
+  ISO date string (`YYYY-MM-DD`) for the beginning of the date range.
+</ParamField>
+
+<ParamField query="end_date" type="string">
+  ISO date string (`YYYY-MM-DD`) for the end of the date range.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id_evento": 42,
+        "tipo_evento": "login_success",
+        "descripcion": "Inicio de sesion exitoso de Ana García",
+        "actor": {
+          "id_admin": 1,
+          "tipo": "database",
+          "nombre": "Ana García",
+          "email": "admin@zippi.app"
+        },
+        "objetivo": {
+          "id_admin": 1,
+          "nombre": "Ana García",
+          "email": "admin@zippi.app"
+        },
+        "payload": { "source": "database" },
+        "fecha_evento": "2024-11-15T12:00:00"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "page_size": 25,
+      "total": 120
+    },
+    "filters": {
+      "search": "",
+      "event_type": "login_success",
+      "actor_id": null,
+      "target_id": null,
+      "start_date": null,
+      "end_date": null
+    },
+    "summary": {
+      "total_events": 120,
+      "logins": 80,
+      "exports": 5,
+      "revocations": 2,
+      "changes": 12,
+      "last_event_at": "2024-11-15T12:00:00",
+      "event_types": [
+        { "event_type": "login_success", "count": 80 }
+      ]
+    }
+  }
+}
+```
+
+---
+
+### GET /api/v1/auth/audit-events/export
+
+Requires `audit.export` permission. Streams the filtered audit event log as a UTF-8 CSV file. Accepts the same filter query parameters as the list endpoint. An `audit_exported` event is recorded for the requesting admin upon every successful export.
+
+```bash
+curl "https://api.zippi.app/api/v1/auth/audit-events/export?start_date=2024-11-01&end_date=2024-11-15" \
+  -H "Authorization: Bearer <access_token>" \
+  -o audit.csv
+```
+
+**Query parameters**
+
+Identical to `GET /api/v1/auth/audit-events` — `search`, `event_type`, `actor_id`, `target_id`, `start_date`, `end_date`.
+
+**Response** — `text/csv; charset=utf-8`
+
+The file is returned as an attachment. The filename follows the pattern `rapi-turbo-auditoria-{scope_label}-{date}.csv`. Columns: `fecha`, `evento`, `descripcion`, `actor`, `actor_email`, `objetivo`, `objetivo_email`, `detalle`.
+
+---
+
+### GET /api/v1/auth/access-catalog
+
+Requires `admins.read` permission. Returns all role definitions and scope types registered on the platform. Use this endpoint to populate role/scope dropdowns when creating or editing admin users.
+
+```bash
+curl https://api.zippi.app/api/v1/auth/access-catalog \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "roles": [
+      {
+        "key": "city_admin",
+        "label": "Administrador ciudad",
+        "description": "Gestiona la operacion, negocios, domiciliarios, soporte y finanzas de una ciudad.",
+        "surface": "admin_panel",
+        "console_access": true,
+        "default_scope_type": "city",
+        "home_route": "/app/admin/city",
+        "modules": ["dashboard", "orders"],
+        "permissions": ["dashboard.read", "orders.read"]
+      }
+    ],
+    "scope_types": [
+      { "key": "global", "label": "Global" },
+      { "key": "country", "label": "Pais" },
+      { "key": "city", "label": "Ciudad" },
+      { "key": "zippi_branch", "label": "Sucursal Zippi" },
+      { "key": "business_group", "label": "Grupo empresarial" },
+      { "key": "business", "label": "Negocio / marca" },
+      { "key": "business_branch", "label": "Sucursal de negocio" },
+      { "key": "self", "label": "Propio" }
+    ]
+  }
+}
+```
+
+<ResponseField name="roles" type="array">
+  Full definitions for all 16 console roles. Each entry includes `key`, `label`, `description`, `surface`, `console_access`, `default_scope_type`, `home_route`, `modules`, and `permissions`.
+</ResponseField>
+
+<ResponseField name="scope_types" type="array">
+  All valid scope type identifiers with their human-readable labels.
+</ResponseField>
+
+---
+
+## Customer endpoints
+
+### POST /api/v1/auth/customer/login
+
+Authenticates an end customer by phone number and password. Returns an access token valid for the standard access TTL and a refresh token, plus the customer's profile.
+
+<Note>
+  Customer login accepts `phone` (not `email`) as the primary identifier. The phone number is normalized by stripping all non-digit characters before lookup, so `+57 310 123 4567`, `573101234567`, and `3101234567` all resolve to the same account.
+</Note>
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/auth/customer/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone": "3101234567",
+    "password": "myP@ssw0rd"
+  }'
+```
+
+**Request body**
+
+<ParamField body="phone" type="string" required>
+  The customer's phone number. Non-digit characters are stripped automatically.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The customer's account password.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expires_at": "2024-11-15T12:04:00+00:00",
+    "user": {
+      "id": "101",
+      "name": "Carlos Pérez",
+      "phone": "3101234567",
+      "email": null,
+      "role": "customer",
+      "role_label": "Cliente",
+      "scope_type": "self",
+      "scope_id": 101,
+      "scope_label": "Carlos Pérez",
+      "home_route": "/app/cliente",
+      "permissions": ["orders.read", "clients.read"],
+      "modules": ["client_app"],
+      "token_version": 1,
+      "source": "customer"
+    }
+  }
+}
+```
+
+<ResponseField name="token" type="string">
+  Alias for `access_token`. Provided for backwards compatibility with older clients.
+</ResponseField>
+
+<ResponseField name="access_token" type="string">
+  Short-lived JWT for authenticating customer requests.
+</ResponseField>
+
+<ResponseField name="refresh_token" type="string">
+  Long-lived JWT to obtain a new access token.
+</ResponseField>
+
+<ResponseField name="expires_at" type="string">
+  ISO 8601 UTC expiry of the access token.
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  Customer profile with role `"customer"`, scope `"self"`, and limited permissions (`orders.read`, `clients.read`).
+</ResponseField>
+
+---
+
+### POST /api/v1/auth/customer/register
+
+Creates a new customer account and immediately returns a session. The phone number must be unique across all customers.
+
+```bash
+curl -X POST https://api.zippi.app/api/v1/auth/customer/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Carlos Pérez",
+    "phone": "3101234567",
+    "email": "carlos@example.com",
+    "password": "myP@ssw0rd"
+  }'
+```
+
+**Request body**
+
+<ParamField body="name" type="string" required>
+  Customer's display name.
+</ParamField>
+
+<ParamField body="phone" type="string" required>
+  Customer's phone number. Normalized to digits only. Must be unique.
+</ParamField>
+
+<ParamField body="email" type="string">
+  Optional email address. Stored as-is; not used for authentication.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Password for the new account. Minimum 6 characters.
+</ParamField>
+
+**Response** `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expires_at": "2024-11-15T12:04:00+00:00",
+    "user": {
+      "id": "102",
+      "name": "Carlos Pérez",
+      "phone": "3101234567",
+      "email": "carlos@example.com",
+      "role": "customer",
+      "role_label": "Cliente",
+      "scope_type": "self",
+      "scope_id": 102,
+      "home_route": "/app/cliente",
+      "permissions": ["orders.read", "clients.read"],
+      "modules": ["client_app"],
+      "token_version": 1,
+      "source": "customer"
+    }
+  }
+}
+```
+
+Returns `409 Conflict` if a customer with the same phone number already exists.
+
+---
+
+## Access profile object
+
+The `user` object returned by login, refresh, and `/me` contains a fully-resolved access profile built by `build_access_profile()`. The fields are consistent across all admin roles.
+
+<ResponseField name="id" type="string | integer">
+  Admin database ID, or `"env-admin"` for the environment-seed administrator.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Admin's display name.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Admin's email address.
+</ResponseField>
+
+<ResponseField name="role" type="string">
+  Normalized role key (e.g., `city_admin`, `super_admin`). See the 16 role keys in [Admin Users](/api/admin-users).
+</ResponseField>
+
+<ResponseField name="role_label" type="string">
+  Human-readable role name (e.g., `"Administrador ciudad"`).
+</ResponseField>
+
+<ResponseField name="role_description" type="string">
+  One-sentence description of what the role can do.
+</ResponseField>
+
+<ResponseField name="surface" type="string">
+  UI surface identifier (e.g., `superadmin_panel`, `admin_panel`, `business_portal`).
+</ResponseField>
+
+<ResponseField name="home_route" type="string">
+  The default redirect route after login (e.g., `"/app/admin/city"`).
+</ResponseField>
+
+<ResponseField name="permissions" type="array">
+  Expanded list of permission strings granted to this role. Umbrella permissions like `catalog.manage` are automatically expanded to their individual action permissions.
+</ResponseField>
+
+<ResponseField name="modules" type="array">
+  List of module keys accessible to this role (e.g., `"dashboard"`, `"orders"`, `"audit"`).
+</ResponseField>
+
+<ResponseField name="scope_type" type="string">
+  The operational scope level: `global`, `country`, `city`, `zippi_branch`, `business_group`, `business`, `business_branch`, or `self`.
+</ResponseField>
+
+<ResponseField name="scope_id" type="integer | null">
+  The database ID of the scoped entity. `null` for global scope.
+</ResponseField>
+
+<ResponseField name="scope_label" type="string | null">
+  Human-readable label for the scope (e.g., `"Bogotá"`, `"Operacion global"`).
+</ResponseField>
+
+<ResponseField name="token_version" type="integer">
+  Monotonically increasing integer. Incremented when a password changes or sessions are manually revoked. Tokens carrying an outdated version are rejected.
+</ResponseField>
+
+<ResponseField name="source" type="string">
+  Token origin: `"database"` for DB admins, `"environment"` for the seed admin, `"customer"` for customer tokens.
+</ResponseField>
